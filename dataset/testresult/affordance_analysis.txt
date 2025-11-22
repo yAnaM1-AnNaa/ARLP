@@ -1,0 +1,29 @@
+Affordance Analysis Report
+Source Image: E:\GithubRepository\ProjectX\dataset\test\bed.jpg
+==================================================
+
+Object ID: 1
+Class: bed
+Confidence: 0.9495
+BBox: [5546.25244140625, 2656.49755859375, 8145.3330078125, 4224.04833984375]
+--------------------
+1. Functional Part: The main functional part of the bed designed for human interaction, visible inside the red bounding box, is the headboard. The headboard includes an adjustable massage feature, which allows users to interact and enjoy a massage while lying down. This part is essential for providing human interaction through therapeutic and comforting experiences.
+2. Geometric Reasoning: The headboard's geometric structure is designed for human interaction, allowing massage functions that require adjustability and support.
+3. Primary Interaction: A human is likely to use the massage feature at the head of the bed, specifically engaging the adjustable massage head, using their back and shoulders to receive a therapeutic experience.
+4. Additional Interactions: 1. Reclining on the fully extended bed with legs up, using both legs and shoulders to rest.
+
+2. Getting up and standing by placing their hands on the bed's frame, primarily involving their arms.
+==================================================
+
+Object ID: 2
+Class: bed
+Confidence: 0.9049
+BBox: [4155.14990234375, 2447.30517578125, 5499.50830078125, 3308.748291015625]
+--------------------
+1. Functional Part: The main functional part visible inside the red bounding box is the mattress. The mattress is the main interaction area of the bed where a person would typically lie down to sleep or rest.
+2. Geometric Reasoning: The mattress's geometric structure is supportive for interaction as it provides a smooth, soft surface for lying down, thanks to its rounded appearance.
+3. Primary Interaction: A human would most likely lie down on the mattress to sleep or rest, using their legs and weight body parts as weight to press down and support their upper body.
+4. Additional Interactions: 1. Standing on the feet to push the mattress slightly to adjust its position, using feet and legs to press down.
+2. Lying down on the bed to give it a comfortable shape by pushing the mattress, using the arms of a person to push down, creating a slight indentation for better support.
+==================================================
+

@@ -1,0 +1,34 @@
+Affordance Analysis Report (Panoramic Context)
+Source Image: E:\GithubRepository\ProjectX\dataset\test\bed.jpg
+==================================================
+
+Object ID: 1 (bed)
+Spatial Context: 1. The bed is not blocked by other furniture.
+2. The bed is placed in the center of the room.
+3. The bed is not facing a specific direction such as a TV or window.
+Core Analysis: Considering the spatial context analyzed, the standard, primary function of this bed is to provide a flat surface for sleeping. The visible geometric structure inside the box supports this function, as it is a bed with a mattress and a striped bedspread. The bed is placed in the center of the room, not blocked by other furniture, and is not facing a specific direction such as a TV or window, making it suitable for sleeping.
+Pseudo Label (JSON): ```json
+{
+  "class": "bed",
+  "functional_part": "mattress",
+  "primary_interaction": "sleep",
+  "spatial_constraint": "None",
+  "human_body_part": "torso"
+}
+```
+--------------------------------------------------
+Object ID: 2 (bed)
+Spatial Context: 1. The bed is not blocked by other furniture.
+2. The bed is placed in the center of the room.
+3. The bed is not facing a specific direction such as a TV or window.
+Core Analysis: Considering the spatial context analyzed, the standard, primary function of this bed is to provide a flat surface for sleeping. The visible geometric structure inside the box supports this function, as the bed has a flat surface suitable for sleeping. The bed is placed in the center of the room, not blocked by other furniture, and is not facing a specific direction such as a TV or window, which further supports its primary function as a sleeping area.
+Pseudo Label (JSON): ```json
+{
+  "class": "bed",
+  "functional_part": "mattress",
+  "primary_interaction": "sleep",
+  "spatial_constraint": "None",
+  "human_body_part": "torso"
+}
+```
+--------------------------------------------------
