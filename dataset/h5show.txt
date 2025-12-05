@@ -1,0 +1,97 @@
+=== FULL HDF5 STRUCTURE: E:/GithubRepository/unsup-affordance/behavior1k_data/h5/armchair.h5 ===
+cyvmhv/
+  cyvmhv/clip_similarities: shape=(14,), dtype=float32
+  cyvmhv/color_label_names: shape=(5,), dtype=object
+  cyvmhv/color_name_features: shape=(5, 384), dtype=float32
+  cyvmhv/depth: shape=(14, 378, 378), dtype=uint16
+  cyvmhv/extrinsics: shape=(14, 4, 4), dtype=float32
+  cyvmhv/intrinsics: shape=(14, 3, 3), dtype=float32
+  cyvmhv/link_segs: shape=(14, 378, 378), dtype=uint16
+  cyvmhv/rgb: shape=(14, 378, 378, 3), dtype=uint8
+  cyvmhv/similarity_projections: shape=(5, 5, 378, 378), dtype=float32
+  cyvmhv/top_k_indices: shape=(5,), dtype=int64
+  cyvmhv/top_k_rgb: shape=(5, 378, 378, 3), dtype=uint8
+hdibix/
+  hdibix/clip_similarities: shape=(14,), dtype=float32
+  hdibix/color_label_names: shape=(5,), dtype=object
+  hdibix/color_name_features: shape=(5, 384), dtype=float32
+  hdibix/depth: shape=(14, 378, 378), dtype=uint16
+  hdibix/embeddings_oai/
+    hdibix/embeddings_oai/Blue: shape=(4, 1024), dtype=float64
+    hdibix/embeddings_oai/Green: shape=(4, 1024), dtype=float64
+    hdibix/embeddings_oai/Yellow: shape=(4, 1024), dtype=float64
+  hdibix/embeddings_st/
+    hdibix/embeddings_st/Blue: shape=(4, 384), dtype=float32
+    hdibix/embeddings_st/Green: shape=(4, 384), dtype=float32
+    hdibix/embeddings_st/Yellow: shape=(4, 384), dtype=float32
+  hdibix/extrinsics: shape=(14, 4, 4), dtype=float32
+  hdibix/intrinsics: shape=(14, 3, 3), dtype=float32
+  hdibix/link_segs: shape=(14, 378, 378), dtype=uint16
+  hdibix/region_matching: shape=(), dtype=object
+    Content (JSON parsed):
+    {'["lean", "support", "the backrest to lean against", "where to rest your back"]': 'Green',
+     '["rest arms", "lean arms", "the armrests to place your arms on", "where to support your elbows"]': 'Yellow',
+     '["sit", "rest", "the surface to sit on", "where to relax your body"]': 'Blue'}
+  hdibix/rgb: shape=(14, 378, 378, 3), dtype=uint8
+  hdibix/similarity_projections: shape=(5, 5, 378, 378), dtype=float32
+  hdibix/top_k_indices: shape=(5,), dtype=int64
+  hdibix/top_k_rgb: shape=(5, 378, 378, 3), dtype=uint8
+nibzys/
+  nibzys/clip_similarities: shape=(14,), dtype=float32
+  nibzys/color_label_names: shape=(6,), dtype=object
+  nibzys/color_name_features: shape=(6, 384), dtype=float32
+  nibzys/depth: shape=(14, 378, 378), dtype=uint16
+  nibzys/embeddings_oai/
+    nibzys/embeddings_oai/Blue: shape=(4, 1024), dtype=float64
+    nibzys/embeddings_oai/Green: shape=(4, 1024), dtype=float64
+    nibzys/embeddings_oai/Red: shape=(4, 1024), dtype=float64
+    nibzys/embeddings_oai/Yellow: shape=(4, 1024), dtype=float64
+  nibzys/embeddings_st/
+    nibzys/embeddings_st/Blue: shape=(4, 384), dtype=float32
+    nibzys/embeddings_st/Green: shape=(4, 384), dtype=float32
+    nibzys/embeddings_st/Red: shape=(4, 384), dtype=float32
+    nibzys/embeddings_st/Yellow: shape=(4, 384), dtype=float32
+  nibzys/extrinsics: shape=(14, 4, 4), dtype=float32
+  nibzys/intrinsics: shape=(14, 3, 3), dtype=float32
+  nibzys/link_segs: shape=(14, 378, 378), dtype=uint16
+  nibzys/region_matching: shape=(), dtype=object
+    Content (JSON parsed):
+    {'["grip", "hold", "the part to push up from", "where to rest arms"]': 'Yellow',
+     '["lean", "support", "the region to rest your back", "where to relax while seated"]': 'Green',
+     '["sit", "rest", "the area to sit on", "where to relax with comfort"]': 'Red',
+     '["support", "stabilize", "the base that supports weight", "where to place feet"]': 'Blue'}
+  nibzys/rgb: shape=(14, 378, 378, 3), dtype=uint8
+  nibzys/similarity_projections: shape=(6, 5, 378, 378), dtype=float32
+  nibzys/top_k_indices: shape=(5,), dtype=int64
+  nibzys/top_k_rgb: shape=(5, 378, 378, 3), dtype=uint8
+vzhxuf/
+  vzhxuf/clip_similarities: shape=(14,), dtype=float32
+  vzhxuf/color_label_names: shape=(5,), dtype=object
+  vzhxuf/color_name_features: shape=(5, 384), dtype=float32
+  vzhxuf/depth: shape=(14, 378, 378), dtype=uint16
+  vzhxuf/embeddings_oai/
+    vzhxuf/embeddings_oai/Blue: shape=(4, 1024), dtype=float64
+    vzhxuf/embeddings_oai/Green: shape=(4, 1024), dtype=float64
+    vzhxuf/embeddings_oai/Orange: shape=(4, 1024), dtype=float64
+    vzhxuf/embeddings_oai/Red: shape=(4, 1024), dtype=float64
+    vzhxuf/embeddings_oai/Yellow: shape=(4, 1024), dtype=float64
+  vzhxuf/embeddings_st/
+    vzhxuf/embeddings_st/Blue: shape=(4, 384), dtype=float32
+    vzhxuf/embeddings_st/Green: shape=(4, 384), dtype=float32
+    vzhxuf/embeddings_st/Orange: shape=(4, 384), dtype=float32
+    vzhxuf/embeddings_st/Red: shape=(4, 384), dtype=float32
+    vzhxuf/embeddings_st/Yellow: shape=(4, 384), dtype=float32
+  vzhxuf/extrinsics: shape=(14, 4, 4), dtype=float32
+  vzhxuf/intrinsics: shape=(14, 3, 3), dtype=float32
+  vzhxuf/link_segs: shape=(14, 378, 378), dtype=uint16
+  vzhxuf/region_matching: shape=(), dtype=object
+    Content (JSON parsed):
+    {'["lean", "support back", "the section to lean against", "where to rest your back"]': 'Blue',
+     '["place feet", "stabilize", "the base for stability", "where to set your feet for balance"]': 'Orange',
+     '["rest arms", "place arms", "the support for your arms", "where to relax your arms"]': 'Green',
+     '["sit", "rest", "the sturdy platform", "where to position yourself comfortably"]': 'Yellow',
+     '["sit", "settle", "the area to sit on", "where to place yourself for seating"]': 'Red'}  
+  vzhxuf/rgb: shape=(14, 378, 378, 3), dtype=uint8
+  vzhxuf/similarity_projections: shape=(5, 5, 378, 378), dtype=float32
+  vzhxuf/top_k_indices: shape=(5,), dtype=int64
+  vzhxuf/top_k_rgb: shape=(5, 378, 378, 3), dtype=uint8
