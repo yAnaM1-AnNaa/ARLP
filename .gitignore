@@ -1,3 +1,4 @@
-download.py
-result.jpg
-yolo11x.pt
+checkpoints/
+dataset/AGD20K/
+dataset/behavior1k_data/
+dataset/pano_gibson/
