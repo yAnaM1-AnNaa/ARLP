@@ -22,11 +22,13 @@ import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
-
+from openai import OpenAI
+import torch
+import torch.nn.functional as F
 import numpy as np
 from PIL import Image
-import requests
-import urllib.request
+import time
+import subprocess
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -72,27 +74,24 @@ def detect_colors(image_path, min_pixels=20):
     return detected
 
 
-def init_model(model_name: str = 'google/gemini-2.0-flash-001'):
+def init_client():
     """Prepare OpenRouter API config for reuse across batch processing."""
     api_key = os.getenv('OPENROUTER_API_KEY')
+    base_url = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
+    site_url = os.getenv('OPENROUTER_SITE_URL')
+    site_name = os.getenv('OPENROUTER_SITE_NAME')
     if not api_key:
         raise EnvironmentError('OPENROUTER_API_KEY is not set')
 
-    base_url = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1/chat/completions')
-    site_url = os.getenv('OPENROUTER_SITE_URL')
-    site_name = os.getenv('OPENROUTER_SITE_NAME')
+    client = OpenAI(
+        api_key = api_key,
+        base_url = base_url
+    )
 
-    client = {
-        'api_key': api_key,
-        'base_url': base_url,
-        'model': model_name,
-        'site_url': site_url,
-        'site_name': site_name,
-    }
-    return client, None
+    return client
 
 
-def _encode_image_as_data_uri(image_path: str) -> str:
+def encode_image_as_data_url(image_path: str) -> str:
     ext = os.path.splitext(image_path)[1].lower()
     if ext in ['.jpg', '.jpeg']:
         mime = 'image/jpeg'
@@ -107,54 +106,36 @@ def _encode_image_as_data_uri(image_path: str) -> str:
     return f'data:{mime};base64,{data}'
 
 
-def _openrouter_chat(
-    client: Dict[str, Any],
+def vlm_response(
+    client: OpenAI,
+    model_name: str,
     prompt: str,
-    image_paths: List[str],
+    image_pair_path: List[str],
     history: Optional[List[Dict[str, str]]] = None,
-    generation_config: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, List[Dict[str, str]]]:
-    headers = {
-        'Authorization': f"Bearer {client['api_key']}",
-        'Content-Type': 'application/json',
-    }
-    if client.get('site_url'):
-        headers['HTTP-Referer'] = client['site_url']
-    if client.get('site_name'):
-        headers['X-Title'] = client['site_name']
-
+    generation_config: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, str]]]:
     content = [{'type': 'text', 'text': prompt}]
-    for path in image_paths:
-        content.append({'type': 'image_url', 'image_url': {'url': _encode_image_as_data_uri(path)}})
+    
+    for path in image_pair_path:
+        content.append({'type': 'image_url', 'image_url': {'url': encode_image_as_data_url(path)}})
 
     messages: List[Dict[str, Any]] = []
     if history:
         messages.extend(history)
     messages.append({'role': 'user', 'content': content})
 
-    payload: Dict[str, Any] = {
-        'model': client['model'],
-        'messages': messages,
-    }
-    if generation_config:
-        payload.update(generation_config)
-
-    if requests is not None:
-        resp = requests.post(client['base_url'], headers=headers, json=payload, timeout=300)
-        if resp.status_code != 200:
-            raise RuntimeError(f'OpenRouter API error {resp.status_code}: {resp.text}')
-        data = resp.json()
-    else:
-        body = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(client['base_url'], data=body, headers=headers, method='POST')
+    for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                resp_body = resp.read().decode('utf-8')
-                data = json.loads(resp_body)
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode('utf-8') if exc.fp else str(exc)
-            raise RuntimeError(f'OpenRouter API error {exc.code}: {err_body}') from exc
-    text = data['choices'][0]['message']['content']
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=messages)
+            text = completion.choices[0].message.content
+            break
+        except Exception as e:
+            if attempt < 2:  # 如果不是最后一次尝试
+                time.sleep(2 ** attempt)  # 指数退避
+                continue
+            else:
+                raise RuntimeError(f'OpenRouter API error: {str(e)}')
 
     new_history = list(history) if history else []
     new_history.append({'role': 'user', 'content': prompt})
@@ -201,19 +182,16 @@ def parse_region_matching(response_text):
     return None
 
 
-def process_image(model, tokenizer, image_path, object_name, colors=None,
-                  original_image_path=None, generation_config=None):
+def process_image(client, model_name, image_pair_path, object_name, colors=None,
+                  generation_config=None):
     """
     Process one clustered image with 4-step Chain-of-Thought.
 
     Args:
-        model: OpenRouter client config
-        tokenizer: unused (kept for compatibility)
+        client: OpenAI client instance
         image_path: path to the clustered/proposal image
         object_name: name of the object (e.g., 'chair', 'kettle')
         colors: list of color names detected in the image; auto-detected if None
-        original_image_path: optional path to the original (non-clustered) image;
-                             when provided, both images are sent to the model
         generation_config: optional dict for generation; defaults to max_new_tokens=1024
 
     Returns:
@@ -229,28 +207,17 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
     generation_config.pop('do_sample', None)
 
     if colors is None:
-        colors = detect_colors(image_path)
-
-    if not colors:
-        print(f"Warning: No colors detected in {image_path}")
-        return None, []
+        colors = detect_colors(image_pair_path[1])
 
     colors_str = ', '.join(colors)
 
     # Prepare images for OpenRouter API
-    if original_image_path is not None:
-        image_paths = [original_image_path, image_path]
-        image_desc = (
-            f'The first image shows the original {object_name}. '
-            f'The second image shows the same {object_name} with different parts highlighted '
-            f'in distinct colors: {colors_str}.'
-        )
-    else:
-        image_paths = [image_path]
-        image_desc = (
-            f'This image shows a {object_name} with different parts highlighted '
-            f'in distinct colors: {colors_str}.'
-        )
+    image_desc = (
+        f'The first image shows the original {object_name}. '
+        f'The second image shows the same {object_name} with different parts highlighted '
+        f'in distinct colors: {colors_str}.'
+    )
+
 
     responses = []
 
@@ -260,8 +227,8 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
         f'For each colored region, identify what functional part of the {object_name} it represents '
         f'and determine whether it is a part that directly interacts with people.'
     )
-    resp1, history = _openrouter_chat(
-        model, question1, image_paths, history=None, generation_config=generation_config
+    resp1, history = vlm_response(
+        client, model_name, question1, image_pair_path, history=None, generation_config=generation_config
     )
     responses.append(resp1)
 
@@ -270,8 +237,8 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
         f'For each colored region you identified, explain from the geometric structure of the {object_name} '
         f'why that part can interact with people. Give a concise explanation for each color.'
     )
-    resp2, history = _openrouter_chat(
-        model, question2, image_paths, history=history, generation_config=generation_config
+    resp2, history = vlm_response(
+        client, model_name, question2, image_pair_path, history=history, generation_config=generation_config
     )
     responses.append(resp2)
 
@@ -281,8 +248,8 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
         f'that part and a person, including the interaction type, the specific part of the {object_name}, '
         f'and how a person would physically interact with it.'
     )
-    resp3, history = _openrouter_chat(
-        model, question3, image_paths, history=history, generation_config=generation_config
+    resp3, history = vlm_response(
+        client, model_name, question3, image_pair_path, history=history, generation_config=generation_config
     )
     responses.append(resp3)
 
@@ -304,12 +271,15 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
         f'- Every detected color must appear exactly once as a value\n'
         f'- Do NOT use single quotes. The output must be parseable by Python ast.literal_eval().'
     )
-    resp4, history = _openrouter_chat(
-        model, question4, image_paths, history=history, generation_config=generation_config
+    resp4, history = vlm_response(
+        client, model_name, question4, image_pair_path, history=history, generation_config=generation_config
     )
-    responses.append(resp4)
-
-    # Parse structured output
     region_matching = parse_region_matching(resp4)
+    responses.append(resp4)
+    log = []
+    # 将问题和回答成对添加到日志列表中
+    log.extend([question1, resp1, question2, resp2, question3, resp3, question4, resp4])
+    for i in log:
+        i = '"' + i + '"'
 
     return region_matching, responses

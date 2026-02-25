@@ -1,6 +1,27 @@
 import h5py
 import matplotlib.pyplot as plt
 import yaml
+import textwrap
+
+def save_response(cot_resoponse, logger):
+    num_question = int(len(cot_resoponse))
+    q = 0
+    while True:
+        raw_sentence = str(cot_resoponse[q])
+        wrapped_sentence = textwrap.fill(
+            raw_sentence,
+            width=110,
+            break_long_words=False,
+            break_on_hyphens=False,
+            subsequent_indent='  '
+        )
+        if q % 2 == 0:
+            logger.info(f'Question {q}:\n{wrapped_sentence}')
+        elif q % 2 == 1:
+            logger.info(f'Response:\n{wrapped_sentence}')
+        q += 1
+        if q == num_question:
+            break
 
 def store_or_update_dataset(h5_group, dataset_key, data, compression=None):
     """

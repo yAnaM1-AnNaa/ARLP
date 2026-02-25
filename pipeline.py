@@ -7,20 +7,35 @@ import numpy as np
 from tqdm import tqdm
 import json
 import ast
+import logging
 
 from src.fusion import create_fusion
 from src.cluster import cluster
-from src.MHACoT import init_model, process_image, detect_colors
+from src.MHACoT import init_client, process_image, detect_colors
 
 # from utils.utils import find_similarity
 from utils.img_utils import grid_visualize, load_pretrained_dino
-from utils.file_utils import store_or_update_dataset, save_image
+from utils.file_utils import store_or_update_dataset, save_image, save_response
 from utils.vlm_utils import get_text_embedding_options
 
 from transformers import AutoProcessor, CLIPModel, AutoTokenizer, CLIPTextModelWithProjection
 sys.path.append(os.getcwd())
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+
+def proxy_off():
+    """关闭代理 - 纯 Python 实现"""
+    for var in ['http_proxy', 'https_proxy', 'all_proxy',
+                'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']:
+        os.environ.pop(var, None)
+    print("😼 已关闭代理环境")
+
+def proxy_on(proxy_url="http://127.0.0.1:7890"):
+    """开启代理 - 纯 Python 实现"""
+    os.environ['http_proxy'] = proxy_url
+    os.environ['https_proxy'] = proxy_url
+    os.environ['all_proxy'] = proxy_url
+    print("🚀 代理已开启")
 
 def find_best_camera_angle(h5_file_path, top_k=3):
     """
@@ -36,6 +51,8 @@ def find_best_camera_angle(h5_file_path, top_k=3):
         similarity = np.dot(features_flat , query_feature) / (np.linalg.norm(features_flat, axis=1) * np.linalg.norm(query_feature))
         return similarity.reshape(-1, 1)
 
+    print('HF requires proxy, turning on clash by excuting clashon')
+    os.system("clashoff")
     model_vision = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
     processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
     model_text = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch32")
@@ -245,16 +262,16 @@ def process_instance(
 
 
 def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, text_embedding_func,
-                     vlm_model=None, vlm_tokenizer=None,
+                     client, model_name, logger,
                      use_existing_cluster=True, use_data_link_segs=False, top_k=3):
     """
     For each instance in the h5 file, will do some processing for fusion and clustering.
-    Uses MHACoT (Multi-Hop Affordance Chain-of-Thought) for region matching.
+    Uses MHACoT (Multi-Head Affordance Chain-of-Thought) for region matching and description.
     Assumes store the new data in the same h5 group. Write to the same file.
     """
-    category_name = os.path.basename(category_h5_path).split('.')[0]
+    category_name = os.path.basename(category_h5_path).split('.')[0] # eg. chair
     with h5py.File(category_h5_path, 'r+') as h5_file:
-        instance_keys = list(h5_file.keys())
+        instance_keys = list(h5_file.keys())  # chair1, chair2...
 
         for instance_key in tqdm(instance_keys):
             instance = h5_file[instance_key]
@@ -268,19 +285,19 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
             else:
                 print(f'Using existing cluster for {category_name}_{instance_key}')
 
-            # query MHACoT and save the region matching
+            # query MHACoT and save the region matching/description
             colors = detect_colors(query_proposal_path)
-            region_matching, cot_responses = process_image(
-                vlm_model, vlm_tokenizer,
-                image_path=query_proposal_path,
+            region_matching, cot_resoponse = process_image(
+                client,
+                model_name,
+                image_pair_path=[query_original_path, query_proposal_path],
                 object_name=category_name,
                 colors=colors,
-                original_image_path=query_original_path
             )
-            print(instance_key, region_matching)
-            if cot_responses:
-                for i, resp in enumerate(cot_responses, 1):
-                    print(f"  CoT Step {i}: {resp[:200]}...")
+            logger.info(f'Target: {instance_key}')
+            save_response(cot_resoponse, logger)
+            # for i, resp in enumerate(cot_responses, 1):
+            #     print(f"  CoT Step {i}: {resp[:200]}...")
             if region_matching is None:
                 print(f'No region matching found for {category_name}_{instance_key}')
                 continue
@@ -317,13 +334,19 @@ def main(args):
     """
     Iterates over each h5 file (corresponding to a category) in the base directory, and processes each file.
     """
+    logging.basicConfig(
+        filename=f'{args.base_dir}/vlm_responses.log',
+        encoding='utf-8',
+        level=logging.INFO,
+    )
+    logger = logging.getLogger(__name__)
     # 读取h5文件例如chair.h5
     # 文件通常包含多个实例（比如不同的椅子），每个实例下存储了多视角的数据
     # rgb(N, H, W, 3)，depth(N, H, W)，intrinsics / extrinsics: 相机内参和外参
     base_dir = args.base_dir
-    # if not os.path.exists(os.path.join(base_dir, 'h5')):
-    #     raise FileNotFoundError(f"h5 folder not found in {base_dir}, please pass in the parent of the h5 folder")
     embedding_type = args.embedding_type
+    print('HF requires proxy, turning on clash.')
+    proxy_on()
     text_embedding_func = get_text_embedding_options(embedding_type)
     category_names = args.category_names
     use_data_link_segs = args.use_data_link_segs if args.use_data_link_segs is not None else False
@@ -352,7 +375,9 @@ def main(args):
     # Initialize MHACoT VLM model
     vlm_model_name = args.vlm_model_name
     print(f'Loading MHACoT model: {vlm_model_name}')
-    vlm_model, vlm_tokenizer = init_model(vlm_model_name)
+    print('OpenAI lib does not accept proxy, turning off clash.')
+    proxy_off()
+    router_client = init_client()
     print(f'Loaded MHACoT model.')
 
     if all_category_h5_paths == []:
@@ -364,7 +389,7 @@ def main(args):
         print(f'Processing {category_h5_path}')
 
         process_category(category_h5_path, dinov2, query_save_dir, embedding_type, text_embedding_func,
-                         vlm_model=vlm_model, vlm_tokenizer=vlm_tokenizer,
+                         client=router_client, model_name=vlm_model_name, logger=logger,
                          use_data_link_segs=use_data_link_segs, top_k=top_k)
 
 
@@ -372,7 +397,7 @@ if __name__ == '__main__':
 
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--base_dir', type=str, default=r'E:/GithubRepository/ARLP/dataset/test')
+    parser.add_argument('--base_dir', type=str, default='./dataset/test')
     parser.add_argument('--embedding_type', type=str, default='embeddings_oai', choices=['embeddings_oai', 'embeddings_st'])
     parser.add_argument('--use_data_link_segs', action='store_true')
     parser.add_argument('--top_k', type=int, default=3)
@@ -381,8 +406,8 @@ if __name__ == '__main__':
                         help='Optional: one or more category names to process. If omitted, '
                              'all categories present in <base_dir>/h5 are processed.')
     parser.add_argument('--torch_path', type=str, default=None, help='Path to torch model cache directory')
-    parser.add_argument('--vlm_model_name', type=str, default='google/gemini-2.0-flash-001',
-                        help='OpenRouter model name (vision-capable)')
+    parser.add_argument('--vlm_model_name', type=str, default='opengvlab/internvl3-78b',
+                        help='API VL model name (vision-capable)')
     args = parser.parse_args()
 
     main(args)

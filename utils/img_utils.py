@@ -2,7 +2,7 @@
 Util functions for image processing
 """
 import matplotlib
-matplotlib.use('Agg') 
+matplotlib.use('Agg')
 import os
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -12,6 +12,10 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
 from transformers import AutoModel
+
+# Auto-detect CUDA device
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {DEVICE}")
 
 
 
@@ -157,11 +161,11 @@ def load_pretrained_dino(model_type='dinov2_vitl14', use_registers=False, torch_
         'dinov2_vitg14': 'facebook/dinov2-giant',
     }
     model_path = hf_map["dinov2_vitl14"]
-    
+
     # dinov2 = torch.hub.load(model_path, model_type).eval().cuda()
-    dinov2 = AutoModel.from_pretrained(model_path)
+    dinov2 = AutoModel.from_pretrained(model_path).to(DEVICE).eval()
     print(f"Loaded {model_type} model")
-    
+
     return dinov2
 
 """Include both image transormation and DINOv2 forward pass"""
@@ -175,7 +179,7 @@ def get_dino_features(dinov2, img, blur=True, repeat_to_orig_size=True):
                 np.array of shape (bs, H, W, n_features) if repeat_to_orig_size
     """
     transformed_imgs = transform_imgs(img, blur=blur)
-    transformed_imgs = torch.stack(transformed_imgs).cuda()
+    transformed_imgs = torch.stack(transformed_imgs).to(DEVICE)
     features = get_dino_features_from_transformed_imgs(dinov2, transformed_imgs, repeat_to_orig_size=repeat_to_orig_size)
     return features
     
