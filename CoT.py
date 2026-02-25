@@ -7,7 +7,7 @@
 #
 # Optional:
 #   --original_dir: directory containing corresponding original images (same filename stem)
-#   --model_name: InternVL2 model variant (default: InternVL2-Llama3-76B)
+#   --model_name: OpenRouter model name (vision-capable)
 #
 # Output: one JSON file per image + a combined results.json with all results
 
@@ -31,8 +31,8 @@ def main():
                         help='Object category name (e.g., chair, kettle)')
     parser.add_argument('--original_dir', type=str, default=None,
                         help='Optional: directory containing original (non-clustered) images with matching filenames')
-    parser.add_argument('--model_name', type=str, default='InternVL2-Llama3-76B',
-                        help='InternVL2 model variant to use')
+    parser.add_argument('--model_name', type=str, default='qwen/qwen3-vl-30b-a3b-thinking',
+                        help='OpenRouter model name (vision-capable)')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -45,7 +45,7 @@ def main():
     )
 
     if not image_paths:
-        print(f"No images found in {args.img_dir}")
+        print(f"No images found in {args.img_dir}. Try put the image under a folder")
         return
 
     print(f"Found {len(image_paths)} images to process")

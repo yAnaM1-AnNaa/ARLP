@@ -1,4 +1,4 @@
 checkpoints/
-dataset/AGD20K/
-dataset/behavior1k_data/
-dataset/pano_gibson/
+dataset/
+src/__pycache__/
+utils/__pycache__/

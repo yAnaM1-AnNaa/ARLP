@@ -321,8 +321,8 @@ def main(args):
     # 文件通常包含多个实例（比如不同的椅子），每个实例下存储了多视角的数据
     # rgb(N, H, W, 3)，depth(N, H, W)，intrinsics / extrinsics: 相机内参和外参
     base_dir = args.base_dir
-    if not os.path.exists(os.path.join(base_dir, 'h5')):
-        raise FileNotFoundError(f"h5 folder not found in {base_dir}, please pass in the parent of the h5 folder")
+    # if not os.path.exists(os.path.join(base_dir, 'h5')):
+    #     raise FileNotFoundError(f"h5 folder not found in {base_dir}, please pass in the parent of the h5 folder")
     embedding_type = args.embedding_type
     text_embedding_func = get_text_embedding_options(embedding_type)
     category_names = args.category_names
@@ -334,23 +334,31 @@ def main(args):
             category_names = [category_names]
         all_category_h5_paths = []
         for cat_name in category_names:
-            category_h5_path = os.path.join(base_dir, 'h5', f'{cat_name}.h5')
+            category_h5_path = os.path.join(base_dir, f'{cat_name}.h5')
             if not os.path.exists(category_h5_path):
                 raise ValueError(f'Category {cat_name} not found in {base_dir}/h5')
             all_category_h5_paths.append(category_h5_path)
     else:  # no specific category supplied -> process entire directory
-        all_category_h5_paths = glob.glob(os.path.join(base_dir, 'h5', '*.h5'))
+        all_category_h5_paths = glob.glob(os.path.join(base_dir, '*.h5'))
 
     query_save_dir = os.path.join(base_dir, 'vlm_query_imgs')
     os.makedirs(query_save_dir, exist_ok=True)
 
-    dinov2 = load_pretrained_dino('dinov2_vits14', use_registers=True, torch_path=args.torch_path)
+    # Initialize DINO model
+    dino_name = 'dinov2_vitl14'
+    dinov2 = load_pretrained_dino(dino_name, use_registers=True, torch_path=args.torch_path)
+    print(f'Loaded dinov2 model, type {dino_name}')
 
     # Initialize MHACoT VLM model
     vlm_model_name = args.vlm_model_name
     print(f'Loading MHACoT model: {vlm_model_name}')
     vlm_model, vlm_tokenizer = init_model(vlm_model_name)
-    print(f'MHACoT model loaded.')
+    print(f'Loaded MHACoT model.')
+
+    if all_category_h5_paths == []:
+        print('No h5 found.')
+    else:
+        print(all_category_h5_paths)
 
     for category_h5_path in all_category_h5_paths:
         print(f'Processing {category_h5_path}')
@@ -364,18 +372,17 @@ if __name__ == '__main__':
 
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--base_dir', type=str, required=True)
+    parser.add_argument('--base_dir', type=str, default=r'E:/GithubRepository/ARLP/dataset/test')
     parser.add_argument('--embedding_type', type=str, default='embeddings_oai', choices=['embeddings_oai', 'embeddings_st'])
     parser.add_argument('--use_data_link_segs', action='store_true')
     parser.add_argument('--top_k', type=int, default=3)
-
     parser.add_argument('--category_names', '-c',
                         nargs='+', dest='category_names', default=None,
                         help='Optional: one or more category names to process. If omitted, '
                              'all categories present in <base_dir>/h5 are processed.')
     parser.add_argument('--torch_path', type=str, default=None, help='Path to torch model cache directory')
-    parser.add_argument('--vlm_model_name', type=str, default='InternVL2-8B',
-                        help='MHACoT VLM model name (e.g., InternVL2-8B, InternVL2-26B, InternVL2-Llama3-76B)')
+    parser.add_argument('--vlm_model_name', type=str, default='google/gemini-2.0-flash-001',
+                        help='OpenRouter model name (vision-capable)')
     args = parser.parse_args()
 
     main(args)

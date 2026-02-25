@@ -474,7 +474,7 @@ def load_data_from_h5(instance, dinov2, use_data_link_segs=False):
         link_segs = instance['link_segs'][:]
 
     # get DINO features batch by batch
-    batch_size = 4 # adjust this if you have OOM
+    batch_size = 1 # adjust this if you have OOM
     features = []
     for i in range(0, colors.shape[0], batch_size):
         end_idx = min(i + batch_size, colors.shape[0])

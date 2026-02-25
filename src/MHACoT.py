@@ -17,16 +17,16 @@ Sample output:
 }
 '''
 import ast
+import base64
 import json
-import math
+import os
 import re
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import torch
-import torchvision.transforms as T
 from PIL import Image
-from torchvision.transforms.functional import InterpolationMode
-from transformers import AutoModel, AutoTokenizer
+import requests
+import urllib.request
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -56,103 +56,6 @@ PALETTE = [
 ]
 
 
-def build_transform(input_size):
-    MEAN, STD = IMAGENET_MEAN, IMAGENET_STD
-    transform = T.Compose([
-        T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
-        T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
-        T.ToTensor(),
-        T.Normalize(mean=MEAN, std=STD)
-    ])
-    return transform
-
-
-def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
-    best_ratio_diff = float('inf')
-    best_ratio = (1, 1)
-    area = width * height
-    for ratio in target_ratios:
-        target_aspect_ratio = ratio[0] / ratio[1]
-        ratio_diff = abs(aspect_ratio - target_aspect_ratio)
-        if ratio_diff < best_ratio_diff:
-            best_ratio_diff = ratio_diff
-            best_ratio = ratio
-        elif ratio_diff == best_ratio_diff:
-            if area > 0.5 * image_size * image_size * ratio[0] * ratio[1]:
-                best_ratio = ratio
-    return best_ratio
-
-
-def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbnail=False):
-    orig_width, orig_height = image.size
-    aspect_ratio = orig_width / orig_height
-
-    target_ratios = set(
-        (i, j) for n in range(min_num, max_num + 1) for i in range(1, n + 1) for j in range(1, n + 1) if
-        i * j <= max_num and i * j >= min_num)
-    target_ratios = sorted(target_ratios, key=lambda x: x[0] * x[1])
-
-    target_aspect_ratio = find_closest_aspect_ratio(
-        aspect_ratio, target_ratios, orig_width, orig_height, image_size)
-
-    target_width = image_size * target_aspect_ratio[0]
-    target_height = image_size * target_aspect_ratio[1]
-    blocks = target_aspect_ratio[0] * target_aspect_ratio[1]
-
-    resized_img = image.resize((target_width, target_height))
-    processed_images = []
-    for i in range(blocks):
-        box = (
-            (i % (target_width // image_size)) * image_size,
-            (i // (target_width // image_size)) * image_size,
-            ((i % (target_width // image_size)) + 1) * image_size,
-            ((i // (target_width // image_size)) + 1) * image_size
-        )
-        split_img = resized_img.crop(box)
-        processed_images.append(split_img)
-    assert len(processed_images) == blocks
-    if use_thumbnail and len(processed_images) != 1:
-        thumbnail_img = image.resize((image_size, image_size))
-        processed_images.append(thumbnail_img)
-    return processed_images
-
-
-def load_image(image_file, input_size=448, max_num=12):
-    image = Image.open(image_file).convert('RGB')
-    transform = build_transform(input_size=input_size)
-    images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, max_num=max_num)
-    pixel_values = [transform(image) for image in images]
-    pixel_values = torch.stack(pixel_values)
-    return pixel_values
-
-
-def split_model(model_name):
-    device_map = {}
-    world_size = torch.cuda.device_count()
-    num_layers = {
-        'InternVL2-1B': 24, 'InternVL2-2B': 24, 'InternVL2-4B': 32, 'InternVL2-8B': 32,
-        'InternVL2-26B': 48, 'InternVL2-40B': 60, 'InternVL2-Llama3-76B': 80}[model_name]
-    # Since the first GPU will be used for ViT, treat it as half a GPU.
-    num_layers_per_gpu = math.ceil(num_layers / (world_size - 0.5))
-    num_layers_per_gpu = [num_layers_per_gpu] * world_size
-    num_layers_per_gpu[0] = math.ceil(num_layers_per_gpu[0] * 0.5)
-    layer_cnt = 0
-    for i, num_layer in enumerate(num_layers_per_gpu):
-        for j in range(num_layer):
-            device_map[f'language_model.model.layers.{layer_cnt}'] = i
-            layer_cnt += 1
-    device_map['vision_model'] = 0
-    device_map['mlp1'] = 0
-    device_map['language_model.model.tok_embeddings'] = 0
-    device_map['language_model.model.embed_tokens'] = 0
-    device_map['language_model.output'] = 0
-    device_map['language_model.model.norm'] = 0
-    device_map['language_model.lm_head'] = 0
-    device_map[f'language_model.model.layers.{num_layers - 1}'] = 0
-
-    return device_map
-
-
 def detect_colors(image_path, min_pixels=20):
     """Detect major colors in the clustered image using the same palette as pipeline."""
     img = Image.open(image_path).convert('RGB')
@@ -169,21 +72,94 @@ def detect_colors(image_path, min_pixels=20):
     return detected
 
 
-def init_model(model_name='InternVL2-Llama3-76B'):
-    """Load model and tokenizer once for reuse across batch processing."""
-    path = f"/root/.cache/modelscope/hub/models/OpenGVLab/{model_name}"
+def init_model(model_name: str = 'google/gemini-2.0-flash-001'):
+    """Prepare OpenRouter API config for reuse across batch processing."""
+    api_key = os.getenv('OPENROUTER_API_KEY')
+    if not api_key:
+        raise EnvironmentError('OPENROUTER_API_KEY is not set')
 
-    device_map = split_model(model_name)
-    model = AutoModel.from_pretrained(
-        path,
-        torch_dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        trust_remote_code=True,
-        device_map=device_map
-    ).eval()
-    tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, use_fast=False)
+    base_url = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1/chat/completions')
+    site_url = os.getenv('OPENROUTER_SITE_URL')
+    site_name = os.getenv('OPENROUTER_SITE_NAME')
 
-    return model, tokenizer
+    client = {
+        'api_key': api_key,
+        'base_url': base_url,
+        'model': model_name,
+        'site_url': site_url,
+        'site_name': site_name,
+    }
+    return client, None
+
+
+def _encode_image_as_data_uri(image_path: str) -> str:
+    ext = os.path.splitext(image_path)[1].lower()
+    if ext in ['.jpg', '.jpeg']:
+        mime = 'image/jpeg'
+    elif ext == '.png':
+        mime = 'image/png'
+    elif ext == '.webp':
+        mime = 'image/webp'
+    else:
+        mime = 'image/jpeg'
+    with open(image_path, 'rb') as f:
+        data = base64.b64encode(f.read()).decode('utf-8')
+    return f'data:{mime};base64,{data}'
+
+
+def _openrouter_chat(
+    client: Dict[str, Any],
+    prompt: str,
+    image_paths: List[str],
+    history: Optional[List[Dict[str, str]]] = None,
+    generation_config: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, List[Dict[str, str]]]:
+    headers = {
+        'Authorization': f"Bearer {client['api_key']}",
+        'Content-Type': 'application/json',
+    }
+    if client.get('site_url'):
+        headers['HTTP-Referer'] = client['site_url']
+    if client.get('site_name'):
+        headers['X-Title'] = client['site_name']
+
+    content = [{'type': 'text', 'text': prompt}]
+    for path in image_paths:
+        content.append({'type': 'image_url', 'image_url': {'url': _encode_image_as_data_uri(path)}})
+
+    messages: List[Dict[str, Any]] = []
+    if history:
+        messages.extend(history)
+    messages.append({'role': 'user', 'content': content})
+
+    payload: Dict[str, Any] = {
+        'model': client['model'],
+        'messages': messages,
+    }
+    if generation_config:
+        payload.update(generation_config)
+
+    if requests is not None:
+        resp = requests.post(client['base_url'], headers=headers, json=payload, timeout=300)
+        if resp.status_code != 200:
+            raise RuntimeError(f'OpenRouter API error {resp.status_code}: {resp.text}')
+        data = resp.json()
+    else:
+        body = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(client['base_url'], data=body, headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                resp_body = resp.read().decode('utf-8')
+                data = json.loads(resp_body)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode('utf-8') if exc.fp else str(exc)
+            raise RuntimeError(f'OpenRouter API error {exc.code}: {err_body}') from exc
+    text = data['choices'][0]['message']['content']
+
+    new_history = list(history) if history else []
+    new_history.append({'role': 'user', 'content': prompt})
+    new_history.append({'role': 'assistant', 'content': text})
+    return text, new_history
 
 
 def parse_region_matching(response_text):
@@ -231,8 +207,8 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
     Process one clustered image with 4-step Chain-of-Thought.
 
     Args:
-        model: loaded InternVL2 model
-        tokenizer: loaded tokenizer
+        model: OpenRouter client config
+        tokenizer: unused (kept for compatibility)
         image_path: path to the clustered/proposal image
         object_name: name of the object (e.g., 'chair', 'kettle')
         colors: list of color names detected in the image; auto-detected if None
@@ -247,6 +223,11 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
     if generation_config is None:
         generation_config = dict(max_new_tokens=1024, do_sample=True)
 
+    # Normalize generation_config for OpenRouter/OpenAI-style APIs
+    if 'max_tokens' not in generation_config and 'max_new_tokens' in generation_config:
+        generation_config['max_tokens'] = generation_config.pop('max_new_tokens')
+    generation_config.pop('do_sample', None)
+
     if colors is None:
         colors = detect_colors(image_path)
 
@@ -256,20 +237,16 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
 
     colors_str = ', '.join(colors)
 
-    # Load images: support both single (proposal only) and dual (original + proposal)
+    # Prepare images for OpenRouter API
     if original_image_path is not None:
-        pv_original = load_image(original_image_path, max_num=12).to(torch.bfloat16).cuda()
-        pv_proposal = load_image(image_path, max_num=12).to(torch.bfloat16).cuda()
-        pixel_values = torch.cat([pv_original, pv_proposal], dim=0)
-        image_prefix = '<image>\n<image>\n'
+        image_paths = [original_image_path, image_path]
         image_desc = (
             f'The first image shows the original {object_name}. '
             f'The second image shows the same {object_name} with different parts highlighted '
             f'in distinct colors: {colors_str}.'
         )
     else:
-        pixel_values = load_image(image_path, max_num=12).to(torch.bfloat16).cuda()
-        image_prefix = ''
+        image_paths = [image_path]
         image_desc = (
             f'This image shows a {object_name} with different parts highlighted '
             f'in distinct colors: {colors_str}.'
@@ -279,14 +256,12 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
 
     # ---- Q1: Where to interact ----
     question1 = (
-        f'{image_prefix}'
         f'{image_desc} '
         f'For each colored region, identify what functional part of the {object_name} it represents '
         f'and determine whether it is a part that directly interacts with people.'
     )
-    resp1, history = model.chat(
-        tokenizer, pixel_values, question1, generation_config,
-        history=None, return_history=True
+    resp1, history = _openrouter_chat(
+        model, question1, image_paths, history=None, generation_config=generation_config
     )
     responses.append(resp1)
 
@@ -295,9 +270,8 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
         f'For each colored region you identified, explain from the geometric structure of the {object_name} '
         f'why that part can interact with people. Give a concise explanation for each color.'
     )
-    resp2, history = model.chat(
-        tokenizer, pixel_values, question2, generation_config,
-        history=history, return_history=True
+    resp2, history = _openrouter_chat(
+        model, question2, image_paths, history=history, generation_config=generation_config
     )
     responses.append(resp2)
 
@@ -307,9 +281,8 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
         f'that part and a person, including the interaction type, the specific part of the {object_name}, '
         f'and how a person would physically interact with it.'
     )
-    resp3, history = model.chat(
-        tokenizer, pixel_values, question3, generation_config,
-        history=history, return_history=True
+    resp3, history = _openrouter_chat(
+        model, question3, image_paths, history=history, generation_config=generation_config
     )
     responses.append(resp3)
 
@@ -331,9 +304,8 @@ def process_image(model, tokenizer, image_path, object_name, colors=None,
         f'- Every detected color must appear exactly once as a value\n'
         f'- Do NOT use single quotes. The output must be parseable by Python ast.literal_eval().'
     )
-    resp4, history = model.chat(
-        tokenizer, pixel_values, question4, generation_config,
-        history=history, return_history=True
+    resp4, history = _openrouter_chat(
+        model, question4, image_paths, history=history, generation_config=generation_config
     )
     responses.append(resp4)
 

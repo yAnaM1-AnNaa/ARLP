@@ -48,7 +48,7 @@ def get_text_embedding_sentence_transformer(text, model_name="all-MiniLM-L6-v2")
     """
     Get text embedding with sentence transformer
     """
-    # model = SentenceTransformer(model_name)
+    model = SentenceTransformer(model_name)
     embedding = sentence_transformer_model.encode(text) # shape (D,)
     return embedding
 
