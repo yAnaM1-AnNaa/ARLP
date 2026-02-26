@@ -162,38 +162,21 @@ def parse_region_matching(response_text):
             print("Failed to find dict structure in response")
             return None
 
-    # Try standard parsing first (works when format is correct: str keys)
+    # Try ast.literal_eval first (same as pipeline)
     try:
         result = ast.literal_eval(dict_str)
         if isinstance(result, dict):
             return result
-    except (ValueError, SyntaxError, TypeError):
+    except (ValueError, SyntaxError):
         pass
 
+    # Fallback: try json.loads
     try:
         result = json.loads(dict_str)
         if isinstance(result, dict):
             return result
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError:
         pass
-
-    # Handle inverted format: {[list]: "Color", ...} -> {"Color": [list]}
-    # The VLM sometimes returns list keys which are unhashable.
-    # Extract pairs by finding each [...] : "Color" pattern.
-    pair_pattern = re.compile(
-        r'(\[.*?\])\s*:\s*"([^"]+)"', re.DOTALL
-    )
-    pairs = pair_pattern.findall(dict_str)
-    if pairs:
-        result = {}
-        for list_str, color in pairs:
-            try:
-                desc_list = ast.literal_eval(list_str)
-                result[str(desc_list)] = color
-            except (ValueError, SyntaxError):
-                result[list_str] = color
-        if result:
-            return result
 
     print("Failed to parse region matching output:")
     print(response_text)

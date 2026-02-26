@@ -16,7 +16,7 @@ def save_response(cot_resoponse, logger):
             subsequent_indent='  '
         )
         if q % 2 == 0:
-            logger.info(f'Question {q}:\n{wrapped_sentence}')
+            logger.info(f'Question {int(1 + q/2)}:\n{wrapped_sentence}')
         elif q % 2 == 1:
             logger.info(f'Response:\n{wrapped_sentence}')
         q += 1

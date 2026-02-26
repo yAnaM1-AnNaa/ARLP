@@ -285,6 +285,11 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
             else:
                 print(f'Using existing cluster for {category_name}_{instance_key}')
 
+            # skip if region_matching already exists
+            if use_existing_cluster and "region_matching" in instance:
+                print(f'Skipping {category_name}_{instance_key}: region_matching already exists')
+                continue
+
             # query MHACoT and save the region matching/description
             colors = detect_colors(query_proposal_path)
             region_matching, cot_resoponse = process_image(
@@ -296,6 +301,7 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
             )
             logger.info(f'Target: {instance_key}')
             save_response(cot_resoponse, logger)
+            logger.info(f'Region matching for {category_name}_{instance_key}: {region_matching}')
             # for i, resp in enumerate(cot_responses, 1):
             #     print(f"  CoT Step {i}: {resp[:200]}...")
             if region_matching is None:
@@ -338,6 +344,8 @@ def main(args):
         filename=f'{args.base_dir}/vlm_responses.log',
         encoding='utf-8',
         level=logging.INFO,
+        format='%(asctime)s %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
     )
     logger = logging.getLogger(__name__)
     # 读取h5文件例如chair.h5
@@ -406,7 +414,7 @@ if __name__ == '__main__':
                         help='Optional: one or more category names to process. If omitted, '
                              'all categories present in <base_dir>/h5 are processed.')
     parser.add_argument('--torch_path', type=str, default=None, help='Path to torch model cache directory')
-    parser.add_argument('--vlm_model_name', type=str, default='opengvlab/internvl3-78b',
+    parser.add_argument('--vlm_model_name', type=str, default='qwen/qwen2.5-vl-72b-instruct',
                         help='API VL model name (vision-capable)')
     args = parser.parse_args()
 
