@@ -269,8 +269,6 @@ def main():
                      help="Read dataset at this H5 internal path")
     ops.add_argument("--write", metavar="DS_PATH",
                      help="Write to this H5 internal path (requires --data_path)")
-    ops.add_argument("--delete", metavar="DS_PATH",
-                     help="Delete dataset/group at this H5 internal path")
     ops.add_argument("--rename", nargs=2, metavar=("OLD", "NEW"),
                      help="Rename OLD path to NEW path")
     ops.add_argument("--copy", nargs=2, metavar=("SRC", "DST"),

@@ -8,7 +8,6 @@ from tqdm import tqdm
 import json
 import ast
 import logging
-import re
 
 from src.fusion import create_fusion
 from src.cluster import cluster
@@ -22,38 +21,6 @@ from utils.vlm_utils import get_text_embedding_options
 from transformers import AutoProcessor, CLIPModel, AutoTokenizer, CLIPTextModelWithProjection
 sys.path.append(os.getcwd())
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-
-def _parse_description_list(descriptions):
-    """Parse description payload into a list[str] with fault tolerance."""
-    if isinstance(descriptions, (list, tuple)):
-        return [str(item).strip() for item in descriptions if str(item).strip()]
-
-    text = str(descriptions).strip()
-    if not text:
-        return []
-
-    try:
-        parsed = ast.literal_eval(text)
-        if isinstance(parsed, (list, tuple)):
-            return [str(item).strip() for item in parsed if str(item).strip()]
-        if isinstance(parsed, str):
-            parsed = parsed.strip()
-            return [parsed] if parsed else []
-    except (SyntaxError, ValueError):
-        pass
-
-    quoted_parts = re.findall(r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'', text)
-    recovered = []
-    for double_quoted, single_quoted in quoted_parts:
-        part = double_quoted or single_quoted
-        part = part.strip()
-        if part:
-            recovered.append(part)
-    if recovered:
-        return recovered
-
-    return [text]
 
 
 def proxy_off():
@@ -309,9 +276,6 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
         for instance_key in tqdm(instance_keys):
             instance = h5_file[instance_key]
 
-            # Emit an early log line so the log file is created even if VLM crashes later.
-            logger.info('Target: %s (category=%s)', instance_key, category_name)
-
             # process the instance
             query_original_path = os.path.join(query_save_dir, f'{category_name}_{instance_key}_original.png')
             query_proposal_path = os.path.join(query_save_dir, f'{category_name}_{instance_key}_proposal.png')
@@ -321,49 +285,23 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
             else:
                 print(f'Using existing cluster for {category_name}_{instance_key}')
 
-            # skip only when region_matching exists and letter count is sufficiently large
+            # skip if region_matching already exists
             if use_existing_cluster and "region_matching" in instance:
-                letter_count = 0
-                try:
-                    region_matching_val = instance["region_matching"][()]
-                    if isinstance(region_matching_val, bytes):
-                        region_matching_text = region_matching_val.decode("utf-8", errors="ignore")
-                    else:
-                        region_matching_text = str(region_matching_val)
-                    letter_count = len(re.findall(r"[A-Za-z]", region_matching_text))
-                except Exception:
-                    letter_count = 0
-
-                if letter_count > 1000:
-                    print(f'Skipping {category_name}_{instance_key}: region_matching letter_count={letter_count} > 1000')
-                    logger.info(
-                        'Skipping %s_%s: region_matching letter_count=%s > 1000',
-                        category_name,
-                        instance_key,
-                        letter_count,
-                    )
-                    continue
+                print(f'Skipping {category_name}_{instance_key}: region_matching already exists')
+                continue
 
             # query MHACoT and save the region matching/description
             colors = detect_colors(query_proposal_path)
-            try:
-                region_matching, cot_resoponse = process_image(
-                    client,
-                    model_name,
-                    image_pair_path=[query_original_path, query_proposal_path],
-                    object_name=category_name,
-                    colors=colors,
-                )
-                save_response(cot_resoponse, logger)
-                logger.info('Region matching for %s_%s: %s', category_name, instance_key, region_matching)
-            except Exception:
-                logger.exception('MHACoT failed for %s_%s', category_name, instance_key)
-                for handler in logger.handlers:
-                    try:
-                        handler.flush()
-                    except Exception:
-                        pass
-                raise
+            region_matching, cot_resoponse = process_image(
+                client,
+                model_name,
+                image_pair_path=[query_original_path, query_proposal_path],
+                object_name=category_name,
+                colors=colors,
+            )
+            logger.info(f'Target: {instance_key}')
+            save_response(cot_resoponse, logger)
+            logger.info(f'Region matching for {category_name}_{instance_key}: {region_matching}')
             # for i, resp in enumerate(cot_responses, 1):
             #     print(f"  CoT Step {i}: {resp[:200]}...")
             if region_matching is None:
@@ -375,15 +313,7 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
             # process the region matching and get the text embedding
             embedding_dict = {}
             for descriptions, color in region_matching.items():
-                description_list = _parse_description_list(descriptions)
-                if not description_list:
-                    logger.warning(
-                        'Skip empty descriptions for %s_%s color=%s',
-                        category_name,
-                        instance_key,
-                        color,
-                    )
-                    continue
+                description_list = ast.literal_eval(descriptions)
                 embedding = [text_embedding_func(description) for description in description_list]
                 embedding = np.array(embedding)
                 # map the color to the embedding array
@@ -411,14 +341,13 @@ def main(args):
     Iterates over each h5 file (corresponding to a category) in the base directory, and processes each file.
     """
     logging.basicConfig(
-        filename=f'{args.base_dir}/vlm_response.log',
+        filename=f'{args.base_dir}/vlm_responses.log',
         encoding='utf-8',
         level=logging.INFO,
         format='%(asctime)s %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
     logger = logging.getLogger(__name__)
-    logger.info('Pipeline started. base_dir=%s embedding_type=%s vlm_model_name=%s', args.base_dir, args.embedding_type, args.vlm_model_name)
     # 读取h5文件例如chair.h5
     # 文件通常包含多个实例（比如不同的椅子），每个实例下存储了多视角的数据
     # rgb(N, H, W, 3)，depth(N, H, W)，intrinsics / extrinsics: 相机内参和外参
@@ -476,7 +405,7 @@ if __name__ == '__main__':
 
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--base_dir', type=str, default='dataset/h5')
+    parser.add_argument('--base_dir', type=str, default='./dataset/test')
     parser.add_argument('--embedding_type', type=str, default='embeddings_oai', choices=['embeddings_oai', 'embeddings_st'])
     parser.add_argument('--use_data_link_segs', action='store_true')
     parser.add_argument('--top_k', type=int, default=3)
@@ -485,7 +414,7 @@ if __name__ == '__main__':
                         help='Optional: one or more category names to process. If omitted, '
                              'all categories present in <base_dir>/h5 are processed.')
     parser.add_argument('--torch_path', type=str, default=None, help='Path to torch model cache directory')
-    parser.add_argument('--vlm_model_name', type=str, default='qwen/qwen3.5-flash-02-23',
+    parser.add_argument('--vlm_model_name', type=str, default='qwen/qwen2.5-vl-72b-instruct',
                         help='API VL model name (vision-capable)')
     args = parser.parse_args()
 
