@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import sqlite3
 
 import h5py
 import numpy as np
@@ -22,6 +23,44 @@ from utils.vlm_utils import get_text_embedding_options
 from transformers import AutoProcessor, CLIPModel, AutoTokenizer, CLIPTextModelWithProjection
 sys.path.append(os.getcwd())
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def ensure_db_row(cursor, h5_path, instance_key):
+    # Ensure every (h5, instance) pair has a tracking row before processing.
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO region_matching_status
+        (h5_path, instance_key, status, region_matching, error)
+        VALUES (?, ?, 'pending', NULL, NULL)
+        """,
+        (h5_path, instance_key),
+    )
+
+
+def fetch_db_status(cursor, h5_path, instance_key):
+    # Database status is now the single source of truth for resume/skip behavior.
+    cursor.execute(
+        """
+        SELECT status FROM region_matching_status
+        WHERE h5_path = ? AND instance_key = ?
+        """,
+        (h5_path, instance_key),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def update_db_result(conn, cursor, h5_path, instance_key, status, region_matching=None, error=None):
+    # Persist the latest processing outcome so interrupted runs can resume safely.
+    cursor.execute(
+        """
+        UPDATE region_matching_status
+        SET status = ?, region_matching = ?, error = ?
+        WHERE h5_path = ? AND instance_key = ?
+        """,
+        (status, region_matching, error, h5_path, instance_key),
+    )
+    conn.commit()
 
 
 def _parse_description_list(descriptions):
@@ -295,58 +334,41 @@ def process_instance(
 
 
 def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, text_embedding_func,
-                     client, model_name, logger,
-                     use_existing_cluster=True, use_data_link_segs=False, top_k=3):
+                     db_conn, db_cursor, client, model_name, logger,
+                     use_data_link_segs=False, top_k=3):
     """
     For each instance in the h5 file, will do some processing for fusion and clustering.
     Uses MHACoT (Multi-Head Affordance Chain-of-Thought) for region matching and description.
     Assumes store the new data in the same h5 group. Write to the same file.
     """
     category_name = os.path.basename(category_h5_path).split('.')[0] # eg. chair
+    abs_h5_path = os.path.abspath(category_h5_path)
     with h5py.File(category_h5_path, 'r+') as h5_file:
         instance_keys = list(h5_file.keys())  # chair1, chair2...
 
         for instance_key in tqdm(instance_keys):
             instance = h5_file[instance_key]
+            ensure_db_row(db_cursor, abs_h5_path, instance_key)
+            db_conn.commit()
+            status = fetch_db_status(db_cursor, abs_h5_path, instance_key)
 
             # Emit an early log line so the log file is created even if VLM crashes later.
             logger.info('Target: %s (category=%s)', instance_key, category_name)
+
+            # Skip only completed items; pending and error rows are retried.
+            if status == 'done':
+                print(f'Skipping {category_name}_{instance_key}: status=done')
+                logger.info('Skipping %s_%s because database status=done', category_name, instance_key)
+                continue
 
             # process the instance
             query_original_path = os.path.join(query_save_dir, f'{category_name}_{instance_key}_original.png')
             query_proposal_path = os.path.join(query_save_dir, f'{category_name}_{instance_key}_proposal.png')
 
-            if not use_existing_cluster or not os.path.exists(query_original_path) or not os.path.exists(query_proposal_path):
-                process_instance(instance, dinov2, query_original_path, query_proposal_path, use_data_link_segs=use_data_link_segs, top_k=top_k)
-            else:
-                print(f'Using existing cluster for {category_name}_{instance_key}')
-
-            # skip only when region_matching exists and letter count is sufficiently large
-            if use_existing_cluster and "region_matching" in instance:
-                letter_count = 0
-                try:
-                    region_matching_val = instance["region_matching"][()]
-                    if isinstance(region_matching_val, bytes):
-                        region_matching_text = region_matching_val.decode("utf-8", errors="ignore")
-                    else:
-                        region_matching_text = str(region_matching_val)
-                    letter_count = len(re.findall(r"[A-Za-z]", region_matching_text))
-                except Exception:
-                    letter_count = 0
-
-                if letter_count > 1000:
-                    print(f'Skipping {category_name}_{instance_key}: region_matching letter_count={letter_count} > 1000')
-                    logger.info(
-                        'Skipping %s_%s: region_matching letter_count=%s > 1000',
-                        category_name,
-                        instance_key,
-                        letter_count,
-                    )
-                    continue
-
-            # query MHACoT and save the region matching/description
-            colors = detect_colors(query_proposal_path)
             try:
+                process_instance(instance, dinov2, query_original_path, query_proposal_path, use_data_link_segs=use_data_link_segs, top_k=top_k)
+
+                colors = detect_colors(query_proposal_path)
                 region_matching, cot_resoponse = process_image(
                     client,
                     model_name,
@@ -356,20 +378,43 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
                 )
                 save_response(cot_resoponse, logger)
                 logger.info('Region matching for %s_%s: %s', category_name, instance_key, region_matching)
-            except Exception:
+            except Exception as exc:
+                error_msg = str(exc)
                 logger.exception('MHACoT failed for %s_%s', category_name, instance_key)
+                # Any exception is captured in the database so the item can be retried later.
+                update_db_result(
+                    db_conn,
+                    db_cursor,
+                    abs_h5_path,
+                    instance_key,
+                    status='error',
+                    region_matching=None,
+                    error=error_msg,
+                )
                 for handler in logger.handlers:
                     try:
                         handler.flush()
                     except Exception:
                         pass
-                raise
+                continue
             # for i, resp in enumerate(cot_responses, 1):
             #     print(f"  CoT Step {i}: {resp[:200]}...")
             if region_matching is None:
                 print(f'No region matching found for {category_name}_{instance_key}')
+                error_msg = f'No region matching found for {category_name}_{instance_key}'
+                # Treat missing/invalid VLM output as a recorded processing error.
+                update_db_result(
+                    db_conn,
+                    db_cursor,
+                    abs_h5_path,
+                    instance_key,
+                    status='error',
+                    region_matching=None,
+                    error=error_msg,
+                )
                 continue
             region_matching_json = json.dumps(region_matching)
+            # Keep writing back to HDF5 for downstream compatibility, while also storing a DB copy.
             store_or_update_dataset(instance, "region_matching", region_matching_json)
 
             # process the region matching and get the text embedding
@@ -400,8 +445,17 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
             for color, embedding in embedding_dict.items():
                 store_or_update_dataset(embedding_group, color, embedding)
 
-            # save the instance
+            # Mark the item complete only after both HDF5 writes and embeddings succeed.
             h5_file.flush()
+            update_db_result(
+                db_conn,
+                db_cursor,
+                abs_h5_path,
+                instance_key,
+                status='done',
+                region_matching=region_matching_json,
+                error=None,
+            )
 
     h5_file.close()          
 
@@ -410,8 +464,11 @@ def main(args):
     """
     Iterates over each h5 file (corresponding to a category) in the base directory, and processes each file.
     """
+    log_dir = os.path.dirname(os.path.abspath(args.base_dir))
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "vlm_response.log")
     logging.basicConfig(
-        filename=f'{args.base_dir}/vlm_response.log',
+        filename=log_path,
         encoding='utf-8',
         level=logging.INFO,
         format='%(asctime)s %(message)s',
@@ -464,19 +521,25 @@ def main(args):
     else:
         print(all_category_h5_paths)
 
-    for category_h5_path in all_category_h5_paths:
-        print(f'Processing {category_h5_path}')
+    # A single shared connection is enough because the pipeline processes instances sequentially.
+    db_conn = sqlite3.connect(args.db_path)
+    db_cursor = db_conn.cursor()
+    try:
+        for category_h5_path in all_category_h5_paths:
+            print(f'Processing {category_h5_path}')
 
-        process_category(category_h5_path, dinov2, query_save_dir, embedding_type, text_embedding_func,
-                         client=router_client, model_name=vlm_model_name, logger=logger,
-                         use_data_link_segs=use_data_link_segs, top_k=top_k)
+            process_category(category_h5_path, dinov2, query_save_dir, embedding_type, text_embedding_func,
+                             db_conn, db_cursor, client=router_client, model_name=vlm_model_name, logger=logger,
+                             use_data_link_segs=use_data_link_segs, top_k=top_k)
+    finally:
+        db_conn.close()
 
 
 if __name__ == '__main__':
 
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--base_dir', type=str, default='dataset/h5')
+    parser.add_argument('--base_dir', type=str, default='dataset/behavior1k_data/h5')
     parser.add_argument('--embedding_type', type=str, default='embeddings_oai', choices=['embeddings_oai', 'embeddings_st'])
     parser.add_argument('--use_data_link_segs', action='store_true')
     parser.add_argument('--top_k', type=int, default=3)
@@ -487,6 +550,8 @@ if __name__ == '__main__':
     parser.add_argument('--torch_path', type=str, default=None, help='Path to torch model cache directory')
     parser.add_argument('--vlm_model_name', type=str, default='qwen/qwen3.5-flash-02-23',
                         help='API VL model name (vision-capable)')
+    parser.add_argument('--db_path', type=str, default='dataset/region_matching.db',
+                        help='Path to the SQLite database for region matching status tracking')
     args = parser.parse_args()
 
     main(args)

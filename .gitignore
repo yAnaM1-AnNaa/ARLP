@@ -1,7 +1,6 @@
 checkpoints/
 dataset/
-src/__pycache__/
-utils/__pycache__/
 .vscode/
-utils/__pycache__/
+*/__pycache__/
 __pycache__/
+ARLP.zip
