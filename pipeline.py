@@ -25,7 +25,30 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def _parse_description_list(descriptions):
-    """Parse description payload into a list[str] with fault tolerance."""
+    """
+    将任意形式的描述字段尽量稳健地解析成 `list[str]`。
+
+    这个函数主要用于处理 VLM 返回的区域描述文本。上游返回格式并不稳定，
+    可能是：
+    1. Python 的 `list` / `tuple`
+    2. 字符串形式的列表，例如 `"['handle', 'seat']"`
+    3. 单个普通字符串
+    4. 混杂引号、转义字符或格式不完整的文本
+
+    处理策略：
+    1. 如果本身就是列表或元组，直接逐项转成字符串并去空白。
+    2. 如果是字符串，优先用 `ast.literal_eval` 尝试恢复为 Python 字面量。
+    3. 若恢复失败，再用正则提取被引号包裹的片段。
+    4. 如果以上都失败，则把整段文本当作一个描述返回。
+
+    参数:
+        descriptions:
+            待解析的描述内容，类型不固定，通常来自 `region_matching` 的 value。
+
+    返回:
+        list[str]:
+            清洗后的描述字符串列表；如果输入为空，则返回空列表。
+    """
     if isinstance(descriptions, (list, tuple)):
         return [str(item).strip() for item in descriptions if str(item).strip()]
 
@@ -44,27 +67,91 @@ def _parse_description_list(descriptions):
         pass
 
     quoted_parts = re.findall(r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'', text)
-    recovered = []
-    for double_quoted, single_quoted in quoted_parts:
-        part = double_quoted or single_quoted
-        part = part.strip()
-        if part:
-            recovered.append(part)
-    if recovered:
-        return recovered
+    # recovered = []
+    # for double_quoted, single_quoted in quoted_parts:
+    #     part = double_quoted or single_quoted
+    #     part = part.strip()
+    #     if part:
+    #         recovered.append(part)
+    # if recovered:
+    #     return recovered
 
-    return [text]
+    # return [text]
+
+
+def _normalize_region_matching(region_matching):
+    """
+    将 region matching 统一规范为 `{color: [description, ...]}` 结构。
+
+    兼容两种输入：
+    1. 新格式：`{"Red": ["...", "..."]}`
+    2. 旧格式：`{"['...', '...']": "Red"}`
+
+    这样后续 embedding 流程只需要处理一种稳定的数据结构。
+    """
+    if not isinstance(region_matching, dict):
+        return {}
+
+    normalized = {}
+    saw_new_format = False
+
+    # 新格式特征：key 是颜色，value 本身就是描述列表，或者是可解析成列表的字符串。
+    for key, value in region_matching.items():
+        color = str(key).strip()
+        parsed_value = value
+        if isinstance(value, str):
+            try:
+                parsed_value = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                parsed_value = value
+
+        if isinstance(parsed_value, (list, tuple)):
+            descriptions = _parse_description_list(parsed_value)
+            if color and descriptions:
+                normalized[color] = descriptions
+                saw_new_format = True
+
+    if saw_new_format:
+        return normalized
+
+    # 兼容旧格式：key 是描述列表字符串，value 是颜色。
+    for descriptions, color in region_matching.items():
+        color_str = str(color).strip()
+        description_list = _parse_description_list(descriptions)
+        if color_str and description_list:
+            normalized[color_str] = description_list
+
+    return normalized
 
 
 def proxy_off():
-    """关闭代理 - 纯 Python 实现"""
+    """
+    关闭当前 Python 进程里的代理环境变量。
+
+    作用:
+    1. 删除常见的 HTTP/HTTPS/ALL_PROXY 大小写变量。
+    2. 让后续网络请求绕过本地代理设置。
+
+    这个函数在本脚本里主要用于切换到不兼容代理环境的组件，
+    例如部分 OpenAI 相关客户端初始化阶段。
+    """
     for var in ['http_proxy', 'https_proxy', 'all_proxy',
                 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']:
         os.environ.pop(var, None)
     print("😼 已关闭代理环境")
 
 def proxy_on(proxy_url="http://127.0.0.1:7890"):
-    """开启代理 - 纯 Python 实现"""
+    """
+    为当前 Python 进程设置代理环境变量。
+
+    作用:
+    1. 设置 `http_proxy`、`https_proxy`、`all_proxy`
+    2. 让后续依赖这些环境变量的下载或模型加载逻辑走指定代理
+
+    参数:
+        proxy_url:
+            代理地址，默认指向本机 `7890` 端口。
+    """
     os.environ['http_proxy'] = proxy_url
     os.environ['https_proxy'] = proxy_url
     os.environ['all_proxy'] = proxy_url
@@ -72,15 +159,36 @@ def proxy_on(proxy_url="http://127.0.0.1:7890"):
 
 def find_best_camera_angle(h5_file_path, top_k=3):
     """
-    For each instance in the h5 file, find the camera angle that has largest CLIP cosine similarity to the instance description (views that are most similar to the instance description).
-    Input:
-        h5_file_path: path to the h5 file
-    No output, but will save the CLIP similarities and top-k frame indices to the h5 file.
-    并不是所有拍摄角度都能清楚地展示物体。这个阶段利用 CLIP 模型找出最能代表该物体类别的“最佳视角”（Top-K）。
-    对于h5文件中的每个实例，找到与实例描述具有最大CLIP余弦相似性的摄像机角度
-    会将CLIP相似度和top-k帧索引保存到h5文件中
+    为一个类别对应的 HDF5 文件挑选“最能代表该物体”的 Top-K 视角。
+
+    背景:
+    同一个实例通常有多张不同相机视角的 RGB 图像，但并不是每个视角都适合
+    做后续的聚类可视化和 VLM 区域理解。这里使用 CLIP 计算“图像视角”与
+    “类别名文本”之间的相似度，选出最相关的若干帧。
+
+    工作流程:
+    1. 从文件名中推断类别名，例如 `chair.h5 -> chair`
+    2. 使用 CLIP 文本编码器对类别名生成文本特征
+    3. 遍历每个实例的所有 RGB 帧，提取图像特征
+    4. 计算每一帧与类别文本之间的余弦相似度
+    5. 选出相似度最高的 `top_k` 帧
+    6. 将结果写回原始 HDF5 文件
+
+    写回字段:
+        - `clip_similarities`: 每帧与类别名的相似度
+        - `top_k_indices`: 最佳视角对应的帧下标，按相似度从高到低排序
+
+    参数:
+        h5_file_path:
+            类别级 HDF5 文件路径，一个文件里通常包含多个实例。
+        top_k:
+            需要保留的最佳视角数量。
+
+    返回:
+        无返回值。结果直接写入 HDF5。
     """
     def find_similarity(features_flat, query_feature):
+        """计算一组图像特征与单个查询特征之间的余弦相似度。"""
         similarity = np.dot(features_flat , query_feature) / (np.linalg.norm(features_flat, axis=1) * np.linalg.norm(query_feature))
         return similarity.reshape(-1, 1)
 
@@ -152,36 +260,51 @@ def process_instance(
     top_k: int = 3
 ):
     """
-    Create a fused 3D representation from HDF5, cluster it, save
-    color-based features and top-3-frame similarity projections
-    back into the HDF5 group. Also save the query original and
-    proposal images to disk.
-    从HDF5创建一个融合的3D表示，将其聚类，
-    将基于颜色的特征和顶部top_k帧的相似性投影保存回HDF5组。
-    还要将查询原始映像和建议映像保存到磁盘
-    得到一个带有丰富语义特征的 3D 点云。
-    Parameters
-    ----------
-    instance : h5py.Group
-        An HDF5 group with datasets:
-            - rgb (N, H, W, 3)
-            - depth (N, H, W)
-            - link_segs (N, H, W)
-            - intrinsics (N, 3, 3)
-            - extrinsics (N, 4, 4)
-            - features (N, H, W, 1024)
-            - clip_similarities (N)
-            - top_k_indices (top_k,)
-        We will add new datasets here, 
-            - similarity_projections (num_clusters, top_k, H, W) # similarity projections for top-k frames
-            - color_label_names (num_clusters,)
-            - color_name_features (num_clusters, D)
-    dinov2 : object
-        Your DINO model or equivalent feature extractor object.
-    query_original_path : str
-        Local file path to save the original query image.
-    query_proposal_path : str
-        Local file path to save the proposal (cluster) image.
+    处理单个实例，生成 3D 融合结果、聚类结果及后续 VLM 所需的中间数据。
+
+    这是整条流水线里的核心步骤之一，负责把“多视角 2D 观测”整理成
+    “可用于语义理解的 3D 聚类表达”。执行后，单个实例会多出一批可复用的
+    HDF5 字段，同时还会在磁盘上保存两张给 VLM 使用的配对图片。
+
+    主要流程:
+    1. 读取 `top_k_indices`，确定最佳视角和查询帧
+    2. 调用 `create_fusion` 构建 3D 融合对象，并逐帧融合
+    3. 在 3D 空间上执行聚类，得到每个点/区域的簇标签
+    4. 聚合每个簇的特征，建立“颜色名 -> 聚类特征”映射
+    5. 把每个簇的相似度重新投影回 Top-K 图像平面，生成热力图
+    6. 将聚类相关结果写回 HDF5
+    7. 导出原图和颜色编码后的 proposal 图，供 VLM 做区域匹配
+
+    输入实例中预期已有的数据:
+        - `rgb`: 多视角彩色图
+        - `depth`: 深度图
+        - `link_segs`: 连通/部件分割信息
+        - `intrinsics` / `extrinsics`: 相机参数
+        - `features`: 每像素或每点特征
+        - `top_k_indices`: 已经选好的最佳视角索引
+
+    本函数新增/更新的数据:
+        - `color_label_names`: 每个聚类对应的颜色标签名
+        - `color_name_features`: 每个颜色标签对应的聚类特征
+        - `similarity_projections`: 每个簇投影到 Top-K 帧上的相似度图
+        - `top_k_rgb`: Top-K 视角的原始 RGB 图像
+
+    参数:
+        instance:
+            当前实例对应的 HDF5 group。
+        dinov2:
+            DINOv2 特征提取模型，用于构建融合表达。
+        query_original_path:
+            保存原始查询图的路径。
+        query_proposal_path:
+            保存聚类 proposal 图的路径。
+        use_data_link_segs:
+            是否优先使用数据中已有的 `link_segs`。
+        top_k:
+            使用多少个最佳视角做投影和保存。
+
+    返回:
+        无返回值。结果直接写入 HDF5，并在磁盘保存图片。
     """
 
     # -------------------------------------------------------------------------
@@ -298,9 +421,47 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
                      client, model_name, logger,
                      use_existing_cluster=True, use_data_link_segs=False, top_k=3):
     """
-    For each instance in the h5 file, will do some processing for fusion and clustering.
-    Uses MHACoT (Multi-Head Affordance Chain-of-Thought) for region matching and description.
-    Assumes store the new data in the same h5 group. Write to the same file.
+    处理一个类别级别的 HDF5 文件，完成该类别下所有实例的聚类、区域匹配和文本嵌入。
+
+    这个函数负责把前面的视觉中间结果与后面的语言理解步骤串起来。对一个类别
+    文件中的每个实例，它会：
+
+    1. 调用 `process_instance` 生成聚类结果和 VLM 查询图片
+    2. 使用 `detect_colors` 从 proposal 图中提取颜色标签
+    3. 调用 `process_image` 让 MHACoT/VLM 根据原图和 proposal 图做区域匹配
+    4. 将 VLM 返回的 `region_matching` 写回 HDF5
+    5. 把每个颜色区域的文本描述编码成向量并保存
+
+    为什么按类别文件处理:
+    一个 `.h5` 文件通常对应一个类别，例如 `chair.h5`。文件内包含多个实例，
+    比如 `chair1`、`chair2` 等。这样便于按类批量处理和后续检索。
+
+    参数:
+        category_h5_path:
+            当前类别 HDF5 文件路径。
+        dinov2:
+            已加载的 DINOv2 模型。
+        query_save_dir:
+            保存 VLM 查询图像的目录。
+        embedding_type:
+            文本嵌入存储到实例中的分组名，例如 `embeddings_oai`。
+        text_embedding_func:
+            文本转向量函数，输入一段描述，输出一个 embedding。
+        client:
+            VLM 客户端。
+        model_name:
+            要调用的视觉语言模型名称。
+        logger:
+            日志记录器。
+        use_existing_cluster:
+            若已有聚类结果和输出图片，是否尽量复用，避免重复计算。
+        use_data_link_segs:
+            是否使用数据中现成的 link segmentation。
+        top_k:
+            使用的最佳视角数。
+
+    返回:
+        无返回值。结果直接写入原始 HDF5 文件。
     """
     category_name = os.path.basename(category_h5_path).split('.')[0] # eg. chair
     with h5py.File(category_h5_path, 'r+') as h5_file:
@@ -373,8 +534,13 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
             store_or_update_dataset(instance, "region_matching", region_matching_json)
 
             # process the region matching and get the text embedding
+            region_matching = _normalize_region_matching(region_matching)
+            if not region_matching:
+                logger.warning('Skip %s_%s because normalized region_matching is empty', category_name, instance_key)
+                continue
+
             embedding_dict = {}
-            for descriptions, color in region_matching.items():
+            for color, descriptions in region_matching.items():
                 description_list = _parse_description_list(descriptions)
                 if not description_list:
                     logger.warning(
@@ -386,7 +552,6 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
                     continue
                 embedding = [text_embedding_func(description) for description in description_list]
                 embedding = np.array(embedding)
-                # map the color to the embedding array
                 embedding_dict[color] = embedding
 
             # save the embedding dictionary
@@ -408,7 +573,25 @@ def process_category(category_h5_path, dinov2, query_save_dir, embedding_type, t
 
 def main(args):
     """
-    Iterates over each h5 file (corresponding to a category) in the base directory, and processes each file.
+    脚本入口函数，负责初始化环境、模型和全局配置，然后逐类别执行处理流程。
+
+    整体职责:
+    1. 初始化日志
+    2. 读取命令行参数
+    3. 打开代理以支持部分模型/依赖下载
+    4. 初始化文本嵌入函数
+    5. 收集需要处理的类别 HDF5 文件
+    6. 加载 DINOv2 模型
+    7. 关闭代理并初始化 MHACoT/VLM 客户端
+    8. 对每个类别文件调用 `process_category`
+
+    输入:
+        args:
+            命令行参数对象，包含数据目录、嵌入类型、类别过滤条件、
+            top_k、torch 缓存路径以及 VLM 模型名等配置。
+
+    返回:
+        无返回值。该函数以“读写 HDF5 + 生成图片 + 记录日志”的方式完成整个 pipeline。
     """
     logging.basicConfig(
         filename=f'{args.base_dir}/vlm_response.log',

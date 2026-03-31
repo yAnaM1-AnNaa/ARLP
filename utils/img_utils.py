@@ -127,46 +127,32 @@ def adjust_intrinsics_and_crop(image, intrinsics, crop_box, new_size, depth=None
 
 ### DINO Features old version w/o registers ###
 
-# def load_pretrained_dino(model_type='dinov2_vitl14', use_registers=False, torch_path=None):
-#     '''
-#     model_type: in ['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14']
-#     use_registers: bool, whether to use registers
-#     torch_path: str, path to torch model cache directory (optional)
-#     '''
-#     # specify path to download pretrained model weights
-#     if torch_path is not None:
-#         os.environ['TORCH_HOME'] = torch_path
-
-#     # load model
-#     if model_type not in ['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 'dinov2_vits14_reg', 'dinov2_vitb14_reg', 'dinov2_vitl14_reg', 'dinov2_vitg14_reg']:
-#         raise ValueError('Invalid model type', model_type)
-    
-#     if use_registers and 'reg' not in model_type:
-#         model_type = model_type + '_reg'
-    
-#     dinov2 = torch.hub.load('facebookresearch/dinov2', model_type).eval().cuda()
-#     print(f"Loaded {model_type} model")
-    
-#     return dinov2
-def load_pretrained_dino(model_type='dinov2_vitl14', use_registers=False, torch_path=None):
+def load_pretrained_dino(model_name, use_registers=False, torch_path=None):
     '''
-    model_type: in ['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14']
+    model_type: in ['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14'] or dinov3
     use_registers: bool, whether to use registers
     torch_path: str, path to torch model cache directory (optional)
     '''
-    hf_map = {
+    model_map = {
         'dinov2_vits14': 'facebook/dinov2-small',
         'dinov2_vitb14': 'facebook/dinov2-base',
         'dinov2_vitl14': 'facebook/dinov2-large',
         'dinov2_vitg14': 'facebook/dinov2-giant',
+        'dinov3_vits16plus': '/root/autodl-tmp/dinov3',
     }
-    model_path = hf_map["dinov2_vitl14"]
+    model_path = model_map[model_name]
 
-    # dinov2 = torch.hub.load(model_path, model_type).eval().cuda()
-    dinov2 = AutoModel.from_pretrained(model_path).to(DEVICE).eval()
-    print(f"Loaded {model_type} model")
-
-    return dinov2
+    if model_name.split('_')[0] == 'dinov2':
+        model = AutoModel.from_pretrained(model_path).to(DEVICE).eval()
+    else:
+        model = torch.hub.load(
+            repo_or_dir=model_path,
+            model=model_name,
+            source="local",
+            weights=model_path + "/weights/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth")
+        model = model.to(DEVICE).eval()
+    print(f"Loaded {model_name} model")
+    return model
 
 """Include both image transormation and DINOv2 forward pass"""
 def get_dino_features(dinov2, img, blur=True, repeat_to_orig_size=True):

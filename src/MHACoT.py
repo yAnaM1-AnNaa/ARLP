@@ -8,12 +8,30 @@ The CoT contains 4 prompts, intended to reveal the following features per colore
 4. Further possible affordance - additional interactions + structured output
 
 Adapted for clustered images where each color represents a different object part.
-Output format: region_matching dict compatible with pipeline.py
+Canonical output format: a JSON object with a `regions` array.
 
 Sample output:
 {
-    '["sit", "rest", "the area to sit on", "where to relax with comfort"]': 'Red',
-    '["support", "stabilize", "the base that supports weight", "where to place feet"]': 'Blue'
+    "regions": [
+        {
+            "color": "Red",
+            "descriptions": [
+                "Where to interact: seat surface",
+                "Why: broad flat area that supports the body",
+                "Basic affordance: sit on the chair",
+                "Further affordance: lean or rest briefly"
+            ]
+        },
+        {
+            "color": "Blue",
+            "descriptions": [
+                "Where to interact: backrest",
+                "Why: upright panel behind the seat",
+                "Basic affordance: support the back",
+                "Further affordance: lean against comfortably"
+            ]
+        }
+    ]
 }
 '''
 import ast
@@ -164,10 +182,59 @@ def vlm_response(
     return text, new_history
 
 
+def _normalize_description_list(descriptions):
+    """Normalize a candidate descriptions field into a clean list[str]."""
+    if isinstance(descriptions, (list, tuple)):
+        return [str(item).strip() for item in descriptions if str(item).strip()]
+    if descriptions is None:
+        return []
+    text = str(descriptions).strip()
+    return [text] if text else []
+
+
+def _canonicalize_region_matching(payload):
+    """Convert parsed model output into canonical {color: [descriptions]} format."""
+    if not isinstance(payload, dict):
+        return None
+
+    regions = payload.get('regions')
+    if isinstance(regions, list):
+        result = {}
+        for item in regions:
+            if not isinstance(item, dict):
+                return None
+            color = str(item.get('color', '')).strip()
+            descriptions = _normalize_description_list(item.get('descriptions', []))
+            if not color or not descriptions:
+                return None
+            result[color] = descriptions
+        return result or None
+
+    # Backward compatibility with the old format: {description_list_str: color}
+    result = {}
+    for descriptions, color in payload.items():
+        color_str = str(color).strip()
+        if not color_str:
+            continue
+        normalized = _normalize_description_list(descriptions)
+        if not normalized:
+            try:
+                parsed = ast.literal_eval(str(descriptions))
+            except (ValueError, SyntaxError, TypeError):
+                parsed = descriptions
+            normalized = _normalize_description_list(parsed)
+        if normalized:
+            result[color_str] = normalized
+    return result or None
+
+
 def parse_region_matching(response_text):
     """
-    Parse the structured output from Q4 into a region_matching dict.
-    Compatible with pipeline.py's parse_lm_output(parse_dict=True).
+    Parse the final VLM response into canonical `{color: [descriptions, ...]}` format.
+
+    Preferred input format is strict JSON with a top-level `regions` field.
+    A best-effort fallback is kept for older dict-shaped outputs so existing logs
+    and cached responses remain readable.
     """
     if response_text is None:
         print("Failed to parse region matching: response_text is None")
@@ -177,51 +244,34 @@ def parse_region_matching(response_text):
     if isinstance(response_text, bytes):
         response_text = response_text.decode("utf-8", errors="ignore")
 
-    # Try to find ANSWER: marker
-    answer_match = re.search(r'ANSWER:\s*(\{.*\})', response_text, re.DOTALL)
+    text = response_text.strip()
+
+    answer_match = re.search(r'ANSWER:\s*(\{.*\})', text, re.DOTALL)
     if answer_match:
-        dict_str = answer_match.group(1)
+        candidate = answer_match.group(1)
     else:
-        # Fallback: find any dict-like structure
-        dict_match = re.search(r'(\{.*\})', response_text, re.DOTALL)
-        if dict_match:
-            dict_str = dict_match.group(1)
+        fenced_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if fenced_match:
+            candidate = fenced_match.group(1)
         else:
-            print("Failed to find dict structure in response")
-            return None
+            dict_match = re.search(r'(\{.*\})', text, re.DOTALL)
+            if not dict_match:
+                print("Failed to find JSON/dict structure in response")
+                return None
+            candidate = dict_match.group(1)
 
-    # Try standard parsing first (works when format is correct: str keys)
+    parsed_payload = None
     try:
-        result = ast.literal_eval(dict_str)
-        if isinstance(result, dict):
-            return result
-    except (ValueError, SyntaxError, TypeError):
-        pass
-
-    try:
-        result = json.loads(dict_str)
-        if isinstance(result, dict):
-            return result
+        parsed_payload = json.loads(candidate)
     except (json.JSONDecodeError, TypeError):
-        pass
+        try:
+            parsed_payload = ast.literal_eval(candidate)
+        except (ValueError, SyntaxError, TypeError):
+            parsed_payload = None
 
-    # Handle inverted format: {[list]: "Color", ...} -> {"Color": [list]}
-    # The VLM sometimes returns list keys which are unhashable.
-    # Extract pairs by finding each [...] : "Color" pattern.
-    pair_pattern = re.compile(
-        r'(\[.*?\])\s*:\s*"([^"]+)"', re.DOTALL
-    )
-    pairs = pair_pattern.findall(dict_str)
-    if pairs:
-        result = {}
-        for list_str, color in pairs:
-            try:
-                desc_list = ast.literal_eval(list_str)
-                result[str(desc_list)] = color
-            except (ValueError, SyntaxError):
-                result[list_str] = color
-        if result:
-            return result
+    result = _canonicalize_region_matching(parsed_payload)
+    if result is not None:
+        return result
 
     print("Failed to parse region matching output:")
     print(response_text)
@@ -241,8 +291,8 @@ def process_image(client, model_name, image_pair_path, object_name, colors=None,
         generation_config: optional dict for generation; defaults to max_new_tokens=1024
 
     Returns:
-        region_matching: dict in format {description_list_str: color_name}, or None on failure
-        raw_responses: list of 4 raw response strings from the model
+        region_matching: canonical dict in format {color_name: [description1, ...]}, or None on failure
+        raw_responses: list of raw prompt/response strings from the model
     """
     if generation_config is None:
         generation_config = dict(max_new_tokens=1024, do_sample=True)
@@ -310,25 +360,29 @@ def process_image(client, model_name, image_pair_path, object_name, colors=None,
 
     # ----  structured output ----
     question5 = (
-        f'Now you should structure your output for each color based on your history responses as follows:\n'
-        f'- Part1: Where to interact (according to response 1)\n'
-        f'- Part2: Why it can interact based on geometric structure (according to response 2)\n'
-        f'- Part3: Describe the basic affordance (according to response 3)\n'
-        f'- Part4: Further possible affordance (e.g., "the area to sit on", "where to relax with comfort")\n\n'
-        f'Output your answer STRICTLY as a Python dictionary in the following format:\n'
-        f'ANSWER FORMAT:\n'
-        '{"[\\"The region with affordance is The rim.\\", \\"This is the top edge of the beaker.\\", '
-        '\\"The affordance is Pouring. This region allows liquid to be poured into or out of the beaker.\\", '
-        '\\"Further possible affordance: 1. Observation. 2. Hold.\\"]" : "Red", ...}\n\n'
+        f'Now convert your analysis into STRICT JSON.\n'
+        f'For each detected color of the {object_name}, produce exactly one object with these fields:\n'
+        f'- `color`: the color name\n'
+        f'- `descriptions`: an array of exactly 4 strings in this order:\n'
+        f'  1. Where to interact\n'
+        f'  2. Why it can interact based on geometric structure\n'
+        f'  3. Basic affordance\n'
+        f'  4. Further possible affordance\n\n'
+        f'Output format must be EXACTLY:\n'
+        f'{{\n'
+        f'  "regions": [\n'
+        f'    {{"color": "Red", "descriptions": ["...", "...", "...", "..."]}}\n'
+        f'  ]\n'
+        f'}}\n\n'
         f'Rules:\n'
-        f'- The content must be parseable by Python ast.literal_eval().\n'
-        f'- Use double quotes for all strings; escape inner double quotes with \\.\n'
-        f'- Each key must be a list of 4 description strings (one per Part).\n'
-        f'- Each value must be exactly one of: {colors_str}.\n'
-        f'- Every detected color must appear exactly once as a value.\n'
-        f'- Do NOT use single quotes.\n'
-        f'- Use longer sentences (not single words); use a definite tone.\n'
-        f'- Output ONLY the dictionary, starting with ANSWER: '
+        f'- Output ONLY JSON. No markdown. No explanation. No prefix.\n'
+        f'- `regions` must be a JSON array.\n'
+        f'- Each `descriptions` value must be a JSON array of exactly 4 non-empty strings.\n'
+        f'- Each `color` must be exactly one of: {colors_str}.\n'
+        f'- Every detected color must appear exactly once.\n'
+        f'- Do not include any colors outside this set.\n'
+        f'- Use double quotes for every JSON string.\n'
+        f'- If uncertain, still return valid JSON using your best grounded guess from the images.\n'
     )
     resp5, history = vlm_response(
         client, model_name, question5, encoded_images, history=history, generation_config=generation_config
