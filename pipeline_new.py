@@ -23,7 +23,7 @@ from utils.file_utils import load_config, store_logs, ResearchSql
 from transformers import AutoProcessor, CLIPModel, AutoTokenizer, CLIPTextModelWithProjection
 
 
-def parse_desctiption_list(descriptions):
+def parse_description_list(descriptions):
     '''
     将任意形式的描述字段解析成 list[str] 
     '''
@@ -127,6 +127,7 @@ def find_best_camera_angle(h5_file_path, db, logger, top_k=5):
     print('HF requires proxy, starting proxy.')
     proxy_on()
     print('Loading CLIP model...')
+    logger.record('Start finding best camera angle.')
     model_vision = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
     processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
     model_text = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch32") #text embedding
@@ -170,18 +171,18 @@ def find_best_camera_angle(h5_file_path, db, logger, top_k=5):
             print(f"Instance {instance_key} top-k frames: {top_k_indices}")
             print(f"Top-k similarities: {clip_similarities[top_k_indices].flatten()}")
             logger.record(f"Instance {instance_key} top-k frames: {top_k_indices}\n")
-
-            # save data into pd dataframe
-            for i in range(len(instance_keys)):
-                for i in range(len(top_k_indices)):
-                    db.add_data(instance_key, str(top_k_indices[i]), None, 'Not yet', '')
+            for top_i in top_k_indices:
+                db.add_data(category_name, instance_key, top_i, '', '', '', '')
 
 
-def process_instance(instance, db, dino_model, 
+
+
+def process_instance(instance, instance_key: str, 
+                     db, dino_model, logger,
                      query_original_path: str,
                      query_proposal_path: str,
-                     use_data_link_segs: bool = False,
-                     top_i: int = 3):
+                     use_data_link_segs: bool,
+                     frame_idx: int):
     '''处理单个instance, 步骤:
     1. 根据`top_k_indices`, 确定最佳视角和对应的2d图
     2. 调用 `create_fusion` 构建 3D 融合对象
@@ -202,12 +203,11 @@ def process_instance(instance, db, dino_model,
         - `top_k_rgb`: Top-K 视角的原始 RGB 图像
     '''
     # 1. Retrieve the top-k frames from HDF5
-    instance_name = instance.name
     top_k_indices = []
-    instance_rows = db.get_instance_data(instance_name) # [{'name1':'name1, 'topk': topk..},{.}, {.}..]
+    instance_rows = db.get_instance_data(instance_key) # [{'name1':'name1, 'topk': topk..},{.}, {.}..]
     for i in range(len(instance_rows)):
         top_k_indices.append(int(instance_rows[i]['frame_idx']))
-    query_frame_idx = top_k_indices[0]            # the "main" query frame
+    query_frame_idx = int(frame_idx)               # use the current selected frame as the query view
 
     # 2. Create the 3D fusion object from the HDF5 group and fuse frames
     fusion = create_fusion(instance, dino_model, use_data_link_segs=use_data_link_segs)
@@ -220,7 +220,7 @@ def process_instance(instance, db, dino_model,
         fusion,
         pca_dim=3,
         use_loc=0.0,
-        frame_idx=top_k_indices[top_i],  # "Query" viewpoint for the color-coded result
+        frame_idx=frame_idx,  # "Query" viewpoint for the color-coded result
         return_color_names=True,
         proj_3d=True,
         min_num_clusters=5,
@@ -291,55 +291,132 @@ def process_instance(instance, db, dino_model,
     print("Saved query original image to:", query_original_path)
     print("Saved proposal (cluster) image to:", query_proposal_path)
     print("Stored color_label_names, color_name_features, and similarity_projections in HDF5.")
+    logger.record(f"Saved query original image to: {query_original_path}")
+    logger.record(f"Saved proposal (cluster) image to: {query_proposal_path}")
 
 
 def process_category(h5_path, db, dino_model, query_save_dir, embedding_type, text_embedding_func,
                      client, model_name, logger,
                      use_existing_cluster=True, use_data_link_segs=False, top_k=3):
-    '''
-    处理一个category中的所有instance.
-        1. 调用 `process_instance` 生成聚类结果和 VLM 查询图片
-        2. 使用 `detect_colors` 从 proposal 图中提取颜色标签
-        3. 调用 `process_image` 让 MHACoT/VLM 根据原图和 proposal 图做区域匹配
-        4. 将 VLM 返回的 `region_matching` 写回 HDF5
-        5. 把每个颜色区域的文本描述编码成向量并保存
-    input args:
-        - `h5_path`: str, 类别级 HDF5 文件路径
-        - `dino_model`: 预加载的 DINO 模型对象，用于特征提取
-        - `query_save_dir`: str, 用于保存查询图像的目录路径
-        - `embedding_type`: str, 文本描述的嵌入类型，例如 "openai" 或 "custom"
-        - `text_embedding_func`: function, 用于将文本描述编码成向量的函数，接口为 func(list_of_str) -> np.array
-        - `client`: 已初始化的 MHACoT 客户端对象
-        - `model_name`: str, VLM 模型名称, 用于region mathing
-        - `logger`: 日志记录对象，用于记录处理过程中的信息
-    '''
-    category_name = os.path.basename(h5_path).split('.')[0] # eg. chair
+    category_name = os.path.basename(h5_path).split('.')[0] # eg. chair.h5 -> chair
     with h5py.File(h5_path, 'r+') as h5_file:
         instance_keys = list(h5_file.keys())  # chair1, chair2...
         for instance_key in tqdm(instance_keys):
             instance = h5_file[instance_key]
-            logger.record('Target: %s (category=%s)', instance_key, category_name)
-            original_img_path = os.path.join(query_save_dir, f'{category_name}_{instance_key}_original.png')
-            proposal_img_path = os.path.join(query_save_dir, f'{category_name}_{instance_key}_proposal.png')
+            logger.record(f'Target: {instance_key} (category={category_name})')
 
-            # decide whether to peocess the target instance based on the status recorded in database
-            top_i = 0
-            for top_i in range(top_k):
-                status = db.get_instance_data(instance)[top_i]['status']
-                frame_idx = db.get_instance_data(instance)[top_i]['frame_idx']
-                if status is not 'Done':
-                    process_instance(instance, dino_model, original_img_path, proposal_img_path, use_data_link_segs=use_data_link_segs, top_i=top_i)
+            if 'top_k_indices' not in instance:
+                find_best_camera_angle(h5_path, db, logger, top_k)
+            else:
+                top_k_indices = instance['top_k_indices'][:]
+                existing_rows = db.get_instance_data(instance_key)
+                existing_frame_idxs = {int(str(row['frame_idx'])) for row in existing_rows}
+
+                for top_i in top_k_indices[:top_k]:
+                    top_i = int(top_i)
+                    if top_i not in existing_frame_idxs:
+                        db.add_data(category_name, instance_key, top_i, '', '', '', '')
+
+            instance_rows = db.get_instance_data(instance_key)
+            for row in instance_rows[:top_k]:
+                status = row['status']
+                frame_idx = int(str(row['frame_idx']))
+                original_img_path = os.path.join(
+                    query_save_dir,
+                    f'{category_name}_{instance_key}_{frame_idx}_original.png'
+                )
+                proposal_img_path = os.path.join(
+                    query_save_dir,
+                    f'{category_name}_{instance_key}_{frame_idx}_proposal.png'
+                )
+
+                if status == 'Done':
+                    print(f'Using existing cluster for {category_name}_{instance_key}_{frame_idx}')
+                    logger.record(f'Using existing cluster for {category_name}_{instance_key}_{frame_idx}, skipping...')
+                    continue
+
+                try:
+                    process_instance(
+                        instance,
+                        instance_key,
+                        db,
+                        dino_model,
+                        logger,
+                        original_img_path,
+                        proposal_img_path,
+                        use_data_link_segs=use_data_link_segs,
+                        frame_idx=frame_idx,
+                    )
+                    db.update_content(
+                        category_name,
+                        instance_key,
+                        frame_idx,
+                        clustered_img_path=proposal_img_path,
+                    )
                     logger.record(f'No existing cluster for {category_name}_{instance_key}_{frame_idx}, initializing...')
-                    top_i += 1
-                else:
-                    print(f'Using existing cluster for {category_name}_{instance_key}')
-                    logger.record(f'Using existing cluster for {category_name}_{instance_key}')
-                    pass
 
+                    colors = detect_colors(proposal_img_path)
+                    region_matching, _ = process_image(
+                        client,
+                        model_name,
+                        image_pair_path=[original_img_path, proposal_img_path],
+                        object_name=category_name,
+                        colors=colors,
+                    )
+                    region_matching = _normalize_region_matching(region_matching)
+                    if not region_matching:
+                        logger.warning('Skip %s_%s_%s because normalized region_matching is empty', category_name, instance_key, frame_idx)
+                        continue
+
+                    region_matching_json = json.dumps(region_matching, ensure_ascii=False)
+                    store_or_update_dataset(instance, f"region_matching_{frame_idx}", region_matching_json)
+                    db.update_content(
+                        category_name,
+                        instance_key,
+                        frame_idx,
+                        vlm_response=region_matching_json,
+                    )
+                    logger.record('Region matching for %s_%s_%s: %s', category_name, instance_key, frame_idx, region_matching)
+
+                    embedding_dict = {}
+                    for color, descriptions in region_matching.items():
+                        description_list = parse_description_list(descriptions)
+                        if not description_list:
+                            logger.warning(
+                                'Skip empty descriptions for %s_%s_%s color=%s',
+                                category_name,
+                                instance_key,
+                                frame_idx,
+                                color,
+                            )
+                            continue
+                        embedding = [text_embedding_func(description) for description in description_list]
+                        embedding = np.array(embedding)
+                        embedding_dict[color] = embedding
+
+                    if embedding_type not in instance.keys():
+                        embedding_group = instance.create_group(embedding_type)
+                    else:
+                        embedding_group = instance[embedding_type]
+
+                    for color, embedding in embedding_dict.items():
+                        store_or_update_dataset(embedding_group, color, embedding)
+
+                    h5_file.flush()
+                    db.update_content(category_name, instance_key, frame_idx, status='Done', error_msg='')
+                except Exception as e:
+                    db.update_content(category_name, instance_key, frame_idx, status='Failed', error_msg=str(e))
+                    logger.exception('Frame failed for %s_%s_%s', category_name, instance_key, frame_idx)
+                    continue
 
 def main(args):
-    logger = store_logs('pipeline_new.log')
-    logger.record('Pipeline started with args: %s', args)
+    db_dir = os.path.dirname(args.db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    db = ResearchSql(os.path.join(db_dir, 'pipeline_info.db'))
+    logger = store_logs('pipeline_info', os.path.join(db_dir, 'pipeline_info.log'))
+    logger.record('\n\nPipeline started with args: %s', args)
+
     base_dir = args.base_dir
     embedding_type = args.embedding_type
     print('HF requires proxy, turning on clash.')
@@ -353,11 +430,30 @@ def main(args):
     # Initialize DINO model
     dino_name = 'dinov2_vitl14'
     dino_model = load_pretrained_dino(dino_name, use_registers=True, torch_path=args.torch_path)
-    print(f'Loaded dino model, type {dino_name}')
+    logger.record(f'Loaded dino model, type {dino_name}')
 
     # Initialize MHACoT VLM model
     vlm_model_name = args.vlm_model_name
+    print('OpenAI lib does not accept proxy, turning off clash.')
+    proxy_off()
+    router_client = init_client()
+    logger.record(f'Loaded MHACoT model: {vlm_model_name}.')
     
+    # start processing
+    for name in os.listdir(base_dir):
+        h5_path = os.path.join(base_dir, name)
+        if not os.path.isfile(h5_path):
+            continue
+        if not name.endswith('.h5'):
+            continue
+        logger.record(f'Processing file: {name}')
+        try:
+            process_category(h5_path, db, dino_model, query_save_dir, embedding_type, text_embedding_func,
+                         client=router_client, model_name=vlm_model_name, logger=logger,
+                         use_existing_cluster=True, use_data_link_segs=False, top_k=3)
+        except Exception as e:
+            logger.exception('Category failed for %s', name)
+            continue
 
 
 
@@ -366,6 +462,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--base_dir', type=str, default='dataset/h5')
+    parser.add_argument('--db_path', default='dataset/h5/db/')
     parser.add_argument('--embedding_type', type=str, default='embeddings_oai', choices=['embeddings_oai', 'embeddings_st'])
     parser.add_argument('--use_data_link_segs', action='store_true')
     parser.add_argument('--top_k', type=int, default=3)
@@ -373,5 +470,8 @@ if __name__ == '__main__':
     parser.add_argument('--vlm_model_name', type=str, default='qwen/qwen3.5-flash-02-23',
                         help='API VL model name (vision-capable)')
     args = parser.parse_args()
+
+    main(args)
+
 
     

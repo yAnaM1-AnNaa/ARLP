@@ -2,7 +2,6 @@ checkpoints/
 dataset/
 */__pycache__/
 .vscode/
-__pycache__/
 */ipynb_checkpoints
 panocontext
 panobasic

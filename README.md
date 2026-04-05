@@ -10,6 +10,10 @@ Behavior 1k数据集初始为3d，通过设定12个不同的角度得到12张同
 
 ---
 
+# dataset
+## pipeline_info.sql
+| category_name | instance_name | frame_idx | | clustered_img_path | status| vlm_response | error_msg
+
 # 项目文件结构
 
 以下为上游项目 unsup-affordance (UAD) 的核心文件清单，ARLP 基于其改进。

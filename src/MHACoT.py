@@ -144,8 +144,20 @@ def vlm_response(
 
     messages: List[Dict[str, Any]] = []
     if history:
-        messages.extend(history)
-    messages.append({'role': 'user', 'content': content})
+        for item in history:
+            role = item.get('role', 'user') if isinstance(item, dict) else 'user'
+            raw_content = item.get('content', '') if isinstance(item, dict) else item
+            if isinstance(raw_content, list):
+                normalized_content = raw_content
+            elif isinstance(raw_content, dict):
+                # Some providers reject a bare object here; coerce it to plain text.
+                normalized_content = str(raw_content)
+            elif raw_content is None:
+                normalized_content = ''
+            else:
+                normalized_content = str(raw_content)
+            messages.append({'role': role, 'content': normalized_content})
+    messages.append({'role': 'user', 'content': list(content)})
 
     for attempt in range(3):
         try:
@@ -322,7 +334,9 @@ def process_image(client, model_name, image_pair_path, object_name, colors=None,
     question1 = (
         f'{image_desc} '
         f'For each colored region, identify what functional part of the {object_name} it represents '
-        f'and determine whether it directly interacts with people.'
+        f'and determine whether it directly interacts with people. '
+        f'Ground every answer in the visual evidence from the original image and the colored proposal image, '
+        f'and explicitly mention the object name, the color name, and the local part context in your reasoning.'
     )
     resp1, history = vlm_response(
         client, model_name, question1, encoded_images, history=None, generation_config=generation_config
@@ -332,7 +346,9 @@ def process_image(client, model_name, image_pair_path, object_name, colors=None,
     # ---- Q2: Why based on geometric structure ----
     question2 = (
         f'For each colored region you identified, explain from the geometric structure of the {object_name} '
-        f'why this part can interact with people. Give a concise explanation for each color.'
+        f'why this part can interact with people. '
+        f'Your explanation should connect the visual shape cues, the part identity from the previous step, '
+        f'and the likely human contact pattern for that colored region of the {object_name}.'
     )
     resp2, history = vlm_response(
         client, model_name, question2, encoded_images, history=history, generation_config=generation_config
@@ -342,7 +358,9 @@ def process_image(client, model_name, image_pair_path, object_name, colors=None,
     question3 = (
         f'For each colored region of the {object_name}, describe the primary(most popular and possible) interaction between '
         f'that part and a person, including the interaction type, the specific part of the {object_name}, '
-        f'and how a person would physically interact with it.'
+        f'and how a person would physically interact with it. '
+        f'Make the explanation concrete and grounded: describe who touches which colored part of the {object_name}, '
+        f'for what purpose, and with what body action or manipulation.'
     )
     resp3, history = vlm_response(
         client, model_name, question3, encoded_images, history=history, generation_config=generation_config
@@ -353,7 +371,9 @@ def process_image(client, model_name, image_pair_path, object_name, colors=None,
     question4 = (
         f'Based on all your analysis, for each colored region of the {object_name}, provide a comprehensive '
         f'set of affordance descriptions for human interaction. Also consider additional common interactions '
-        f'beyond those already discussed.' )
+        f'beyond those already discussed. '
+        f'Keep the analysis tied to the earlier reasoning about part identity, geometry, and primary interaction, '
+        f'so the final affordance set reads like a coherent chain of reasoning rather than disconnected facts.' )
     resp4, history = vlm_response(
         client, model_name, question4, encoded_images, history=history, generation_config=generation_config
     )
@@ -374,6 +394,15 @@ def process_image(client, model_name, image_pair_path, object_name, colors=None,
         f'    {{"color": "Red", "descriptions": ["...", "...", "...", "..."]}}\n'
         f'  ]\n'
         f'}}\n\n'
+        f'Writing requirements for every one of the 4 description strings:\n'
+        f'- Each description must be a complete, information-rich sentence, not a short phrase or label.\n'
+        f'- Each sentence must explicitly mention the color, the {object_name}, and the relevant local part or area.\n'
+        f'- The 4 sentences must form a logical chain: identify the part first, explain the geometry second, describe the main human interaction third, and extend it with another plausible interaction fourth.\n'
+        f'- The final JSON must include the background information from the earlier questions, so each 4-sentence set is self-contained and understandable without reading the intermediate reasoning.\n'
+        f'- Sentence 2 must clearly build on sentence 1, sentence 3 must build on sentences 1-2, and sentence 4 must extend the same reasoning instead of repeating it.\n'
+        f'- Use concrete interaction wording such as grasp, hold, press, pull, twist, support, rest, push, lift, or manipulate whenever visually justified.\n'
+        f'- Avoid vague fragments like "lower section" or "provides leverage" unless you also explain what part of the {object_name} it is and how a person would use it.\n'
+        f'- Make each sentence moderately detailed, typically around 18-35 words, while staying grounded in the images.\n\n'
         f'Rules:\n'
         f'- Output ONLY JSON. No markdown. No explanation. No prefix.\n'
         f'- `regions` must be a JSON array.\n'

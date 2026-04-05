@@ -157,7 +157,7 @@ def proxy_on(proxy_url="http://127.0.0.1:7890"):
     os.environ['all_proxy'] = proxy_url
     print("🚀 代理已开启")
 
-def find_best_camera_angle(h5_file_path, top_k=3):
+def find_best_camera_angle(h5_file_path, db, top_k=3):
     """
     为一个类别对应的 HDF5 文件挑选“最能代表该物体”的 Top-K 视角。
 
@@ -240,13 +240,14 @@ def find_best_camera_angle(h5_file_path, top_k=3):
                 'clip_similarities': clip_similarities.flatten(),
                 'top_k_indices': top_k_indices
             }
+            for top_i in top_k_indices:
+                db.add_data(category_name, instance_key, top_i, '', '', '', '')
 
     # Second pass: update the file with the similarities and top-k indices
     with h5py.File(h5_file_path, 'r+') as h5_file:
         for instance_key, data in instance_data.items():
             # Store CLIP similarities
             store_or_update_dataset(h5_file[instance_key], 'clip_similarities', data['clip_similarities'])
-
             # Store top-k indices
             store_or_update_dataset(h5_file[instance_key], 'top_k_indices', data['top_k_indices'])
 
