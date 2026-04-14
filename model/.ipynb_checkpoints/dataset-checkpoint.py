@@ -9,7 +9,7 @@ Returned item dict:
         "rgb"      : FloatTensor(3, H, W)
     }
 """
-import os, json, argparse, random, sqlite3
+import os, json, argparse, random
 from typing import List, Tuple
 import glob
 
@@ -104,7 +104,7 @@ class RegionSimDataset(Dataset):
     # ................................................................. #
     def __init__(self,
                  h5_paths,
-                 db_path=None,
+                 db_path,
                  *,
                  random_pad: bool = True,
                  thresh: float = 0.5,
@@ -116,8 +116,6 @@ class RegionSimDataset(Dataset):
 
         if isinstance(h5_paths, (str, os.PathLike)):
             h5_paths = [str(h5_paths)]
-        if db_path is None:
-            db_path = os.path.join(os.path.dirname(h5_paths[0]), "db", "pipeline_info.db")
 
         self._rand_pad = random_pad
         self._thresh   = float(thresh)
@@ -126,10 +124,9 @@ class RegionSimDataset(Dataset):
         self._bg_bank  = None 
         self._embedding_size = None  # Will be set when first embedding is loaded
 
-        # flat list: (text, emb, raw_sim, processed_rgb, foreground_mask)
-        self.samples: List[Tuple[str, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        # flat list: (text, emb, raw_sim, processed_rgb)
+        self.samples: List[Tuple[str, torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
-        self._db_rows_by_category = self._load_sql_rows(db_path)
         for fp in tqdm(h5_paths):
             self._ingest_file(fp, embedding_type)
 
@@ -143,102 +140,78 @@ class RegionSimDataset(Dataset):
     # ------------------------------------------------------------------ #
     #                        DATA INGESTION                               #
     # ------------------------------------------------------------------ #
-    def _load_sql_rows(self, db_path: str):
-        """Load SQL rows keyed by category for the new pipeline output."""
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            query = """
-                SELECT category_name, instance_name, frame_idx, vlm_response, text_embedding, sim_proj
-                FROM pipeline_info
-                WHERE status = 'Done'
-                  AND vlm_response IS NOT NULL AND vlm_response != ''
-                  AND text_embedding IS NOT NULL AND text_embedding != ''
-                  AND sim_proj IS NOT NULL AND sim_proj != ''
-                ORDER BY category_name, instance_name, CAST(frame_idx AS INTEGER)
-            """
-            rows = [dict(row) for row in conn.execute(query)]
-        finally:
-            conn.close()
-
-        rows_by_category = {}
-        for row in rows:
-            rows_by_category.setdefault(row["category_name"], []).append(row)
-        return rows_by_category
-
     def _ingest_file(self, fp: str, embedding_type: str):
-        """Read one .h5 file and cache SQL-backed samples as tensors."""
-        category_name = os.path.splitext(os.path.basename(fp))[0]
-        sql_rows = self._db_rows_by_category.get(category_name, [])
-        if not sql_rows:
-            print(f"Skipping {category_name}: no SQL rows")
-            return
-
+        """Read one .h5 file and cache everything as tensors."""
         with h5py.File(fp, "r") as f:
-            for row in sql_rows:
-                inst_key = row["instance_name"]
-                if inst_key not in f:
-                    print(f"Skipping {category_name}/{inst_key}: missing H5 instance")
-                    continue
-
+            for inst_key in f:
                 grp = f[inst_key]
-                if "rgb" not in grp:
-                    print(f"Skipping {category_name}/{inst_key}: missing ['rgb']")
-                    continue
 
-                try:
-                    frame_idx = int(row["frame_idx"])
-                    raw_rgb = grp["rgb"][frame_idx]
-                except Exception as exc:
-                    print(f"Skipping {category_name}/{inst_key}/{row['frame_idx']}: invalid RGB frame ({exc})")
-                    continue
+                needed = ["region_matching", "color_label_names",
+                          "similarity_projections", embedding_type, "top_k_rgb"]
+                
+                if not all(k in grp for k in needed):
+                    missing = [k for k in needed if k not in grp]
+                    print(f"Skipping {inst_key}: missing {missing}")
+                    continue                          # skip incomplete instance
 
-                rgb = transform_imgs(raw_rgb)[0]
-                _, H_px, W_px = rgb.shape
+                # ---- look-ups ------------------------------------------------ #
+                color_names = [n.decode() if isinstance(n, bytes) else str(n)
+                               for n in grp["color_label_names"][()]]
+                color_to_idx = {c: i for i, c in enumerate(color_names)}
 
-                bg_bool = (raw_rgb[..., 0] > 253) & \
-                          (raw_rgb[..., 1] > 253) & \
-                          (raw_rgb[..., 2] > 253)
-                fg_mask = (~bg_bool).astype(np.float32)
-                mask = torch.from_numpy(fg_mask)
-                mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0),
-                                     size=(H_px, W_px),
-                                     mode='nearest').squeeze(0).squeeze(0)
+                region_map = json.loads(grp["region_matching"][()].decode("utf-8"))
 
-                try:
-                    region_map = json.loads(row["vlm_response"])
-                    text_embedding = json.loads(row["text_embedding"])
-                    sim_proj_paths = json.loads(row["sim_proj"])
-                except json.JSONDecodeError as exc:
-                    print(f"Skipping {category_name}/{inst_key}/{frame_idx}: invalid SQL JSON ({exc})")
-                    continue
+                sim_all = grp["similarity_projections"][()]        # (C, 3, H, W)
 
-                for colour, desc_list in region_map.items():
-                    if colour not in text_embedding or colour not in sim_proj_paths:
+                raw_rgbs = grp["top_k_rgb"][()]             # (k,H,W,3) uint8
+                rgb_all  = transform_imgs(raw_rgbs)          # list or tensor
+                if isinstance(rgb_all, list):
+                    rgb_all = torch.stack(rgb_all, 0)        # (k,3,H',W')
+
+                # ---------- build foreground masks ----------
+                # target spatial size comes from the already-transformed RGB tensor
+                H_px, W_px = rgb_all.shape[2:]                      # e.g. (448, 448)
+                mask_list = []
+
+                for raw in raw_rgbs:                                # iterate 3 camera views
+                    # 0/1 background flag in raw image space
+                    bg_bool = (raw[..., 0] > 253) & \
+                            (raw[..., 1] > 253) & \
+                            (raw[..., 2] > 253)
+                    fg_mask = (~bg_bool).astype(np.float32)         # 1 = foreground, 0 = bg
+
+                    # tensorify and resize to (H_px, W_px) with *nearest* to keep binary
+                    m = torch.from_numpy(fg_mask)                   # (H0, W0)
+                    m = F.interpolate(m.unsqueeze(0).unsqueeze(0),
+                                    size=(H_px, W_px),
+                                    mode='nearest').squeeze(0).squeeze(0)  # (H_px, W_px)
+                    mask_list.append(m)
+
+                mask_all = torch.stack(mask_list, 0)                # (3, H_px, W_px)
+
+                emb_grp = grp[embedding_type]
+
+                # ---- build samples ------------------------------------------ #
+                for key, colour in region_map.items():
+                    if colour not in color_to_idx or colour not in emb_grp:
                         continue
+                    cidx      = color_to_idx[colour]
+                    desc_list = json.loads(key)                  # list[str]
+                    emb_mat   = emb_grp[colour][()]              # (N, D) - dimension depends on embedding type
+                    if emb_mat.shape[0] != len(desc_list):
+                        continue       # mis-aligned, skip
 
-                    emb_mat = np.asarray(text_embedding[colour], dtype=np.float32)
-                    if emb_mat.ndim != 2 or emb_mat.shape[0] != len(desc_list):
-                        print(f"Skipping {category_name}/{inst_key}/{frame_idx}/{colour}: embedding/text mismatch")
-                        continue
+                    # Set embedding size from first valid embedding
                     if self._embedding_size is None and emb_mat.shape[1] > 0:
                         self._embedding_size = emb_mat.shape[1]
 
-                    try:
-                        sim_np = np.load(sim_proj_paths[colour]).astype(np.float32)
-                    except Exception as exc:
-                        print(f"Skipping {category_name}/{inst_key}/{frame_idx}/{colour}: failed to load sim_proj ({exc})")
-                        continue
-
-                    sim = torch.from_numpy(sim_np).float()
-                    if sim.shape != raw_rgb.shape[:2]:
-                        sim = F.interpolate(sim.unsqueeze(0).unsqueeze(0),
-                                            size=raw_rgb.shape[:2],
-                                            mode='nearest').squeeze(0).squeeze(0)
-
                     for j, desc in enumerate(desc_list):
                         emb = torch.from_numpy(emb_mat[j]).float()
-                        self.samples.append((desc, emb, sim, rgb, mask))
+                        for cam in range(3):
+                            sim = torch.from_numpy(sim_all[cidx, cam]).float()  # (H_m, W_m)
+                            rgb = rgb_all[cam]                                   # (3, H_px, W_px)
+                            mask = mask_all[cam]             # (H',W')
+                            self.samples.append((desc, emb, sim, rgb, mask))
 
     # ------------------------------------------------------------
     def _build_bg_bank(self):
@@ -432,7 +405,7 @@ def _demo_vis(dataset: RegionSimDataset, n_show: int = 4, seed: int = 0):
     plt.show() # visualize data sample
 
 
-def create_dataset(data_root, use_categories=None, random_pad=False, bg_dir=None, embedding_type="embeddings_oai", db_path=None):
+def create_dataset(data_root, use_categories=None, random_pad=False, bg_dir=None, embedding_type="embeddings_oai"):
     """
     Create a dataset from a root directory of h5 files.
     
@@ -464,10 +437,7 @@ def create_dataset(data_root, use_categories=None, random_pad=False, bg_dir=None
     else:
         all_category_h5_paths = glob.glob(os.path.join(data_root, 'h5', '*.h5'))
 
-    if db_path is None:
-        db_path = os.path.join(data_root, "h5", "db", "pipeline_info.db")
-
-    return RegionSimDataset(all_category_h5_paths, db_path, random_pad=random_pad, bg_dir=bg_dir, 
+    return RegionSimDataset(all_category_h5_paths, random_pad=random_pad, bg_dir=bg_dir, 
                            embedding_type=embedding_type)
 
 # --------------------------------------------------------------------------- #
@@ -487,14 +457,12 @@ if __name__ == "__main__":
                         help="Which embedding type to use")
     parser.add_argument("--n_show", type=int, default=1,
                         help="Number of samples to visualize")
-    parser.add_argument("--db_path", type=str, default=None,
-                        help="Path to pipeline_info.db. Defaults to <data_root>/h5/db/pipeline_info.db")
     parser.add_argument("--name", type=str)
     args = parser.parse_args()
 
     # Create dataset with specified embedding type
     ds = create_dataset(args.data_root, args.categories, random_pad=False, 
-                       bg_dir=None, embedding_type=args.embedding_type, db_path=args.db_path)
+                       bg_dir=None, embedding_type=args.embedding_type)
     ds._rand_pad = True
     
     print(f"Dataset size: {len(ds)}")

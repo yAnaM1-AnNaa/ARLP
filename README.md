@@ -14,6 +14,18 @@ Behavior 1k数据集初始为3d，通过设定12个不同的角度得到12张同
 ## pipeline_info.sql
 | category_name | instance_name | frame_idx | | clustered_img_path | status| vlm_response | error_msg
 
+训练所需的有以下四类:
+1. processed_img. 是rgb图像经过处理后的tensor.
+2. text/text embedding. text是VLM给出的针对每个部件的描述, 例如‘handle for gripping’, text embedding就是文本的嵌入向量, 可有openai text embedding model(online)或sentence transformer(local)两种模型选择
+3. sim_proj. 训练 target，也就是模型要学习预测的热力图, 来自 H5 的 similarity_projections。例如, vlm_response中有"red": ["handle for gripping"], dataset 会用color_label_names 找到 "red" 对应第几个 cluster，然后从：similarity_projections[color_idx, cam_idx]取出对应的热力图作为 sim_proj。
+4. mask. dataset 内部用于背景替换增强的 foreground mask，不直接作为模型输入或 loss target 返回。它由原始 RGB 中接近白色的背景区域计算出来
+
+输入:
+processed_img = 某个真实 RGB 视角
+text_emb = 某句 affordance 描述的 embedding
+监督:
+sim_proj = 这句 affordance 对应颜色区域的热力图
+
 # 项目文件结构
 
 以下为上游项目 unsup-affordance (UAD) 的核心文件清单，ARLP 基于其改进。

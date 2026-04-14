@@ -110,10 +110,10 @@ class Trainer:
         date = datetime.datetime.now().strftime("%Y%m%d")
         exp = args.run_name
 
-        self.log_dir = Path(__file__).parent / "logs" / date / exp
+        self.log_dir = Path(__file__).parent.parent / "logs" / date / exp
         (self.log_dir / "ckpts").mkdir(parents=True, exist_ok=True)
 
-        self.use_wandb = (not args.no_wandb)
+        self.use_wandb = (not args.no_wandb) and _wandb_available
         if self.use_wandb:
             wandb.init(project="Affordance_train",
                     name=exp,
