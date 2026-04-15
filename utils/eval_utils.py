@@ -24,19 +24,24 @@ def image_binary(image, threshold):
     return output
 
 
-def cal_nss(pred: np.ndarray, gt: np.ndarray, threshold=0.1) -> np.ndarray:
+def cal_nss(pred: np.ndarray, gt: np.ndarray, threshold=0.1, eps=1e-12) -> np.ndarray:
     # pred = pred / 255.0
     # gt = gt / 255.0
     std = np.std(pred)
+    if std < eps:
+        return 0.0
     u = np.mean(pred)
 
-    smap = (pred - u) / std
-    fixation_map = (gt - np.min(gt)) / (np.max(gt) - np.min(gt) + 1e-12)
+    smap = (pred - u) / (std + eps)
+    fixation_map = (gt - np.min(gt)) / (np.max(gt) - np.min(gt) + eps)
     fixation_map = image_binary(fixation_map, threshold)
 
-    nss = smap * fixation_map
+    fixation_sum = np.sum(fixation_map)
+    if fixation_sum < eps:
+        return 0.0
 
-    nss = np.sum(nss) / np.sum(fixation_map + 1e-12)
+    nss = smap * fixation_map
+    nss = np.sum(nss) / fixation_sum
 
     return nss
 

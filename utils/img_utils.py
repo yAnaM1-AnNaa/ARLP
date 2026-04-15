@@ -139,6 +139,8 @@ def load_pretrained_dino(model_name, use_registers=False, torch_path=None):
         'dinov2_vitl14': 'facebook/dinov2-large',
         'dinov2_vitg14': 'facebook/dinov2-giant',
         'dinov3_vits16plus': '/root/autodl-tmp/dinov3',
+        'dinov2_with_registers_b': 'facebook/dinov2-with-registers-base',
+        'dinov2_with_registers_l': 'facebook/dinov2-with-registers-large',
     }
     model_path = model_map[model_name]
 
@@ -240,10 +242,11 @@ def get_dino_features_from_transformed_imgs(dinov2, imgs, repeat_to_orig_size=Tr
             outputs = dinov2(imgs)
             # HF 输出包含 CLS token (index 0)
             # outputs.last_hidden_state shape: (batch, seq_len, hidden_dim)
-            features = outputs.last_hidden_state[:, 1:, :]
-            
-        features = features.reshape(bs, patch_h, patch_w, -1)
-
+            num_register_tokens = int(getattr(dinov2.config, "num_register_tokens", 0))
+            features = outputs.last_hidden_state[:, 1 + num_register_tokens:, :]
+            features = features.reshape(bs, patch_h, patch_w, -1)
+        
+        
     if not repeat_to_orig_size:
         return features # (bs, patch_h, patch_w, n_features)
     else:

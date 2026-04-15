@@ -271,11 +271,10 @@ class Trainer:
 # =====================================================================
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True, help="Path to YAML config file")
-    ap.add_argument("--data", required=True, nargs='+',
+    ap.add_argument("--config", default='configs/oai_vitl_registers_cot.yaml', help="Path to YAML config file")
+    ap.add_argument("--data", default=['dataset/h5/pt/embeddings_oai_proposal_sql.pt'], nargs='+',
                 help="One or more RegionSimDataset .pt files")
-    ap.add_argument("--run_name", required=True, help="Run name")
-    
+    ap.add_argument("--run_name", default='with_registers', help="Run name")
     ap.add_argument("--thresh", type=float, default=0.5, help="Threshold for logits")
     ap.add_argument("--epochs", type=int)
     ap.add_argument("--batch",  type=int)

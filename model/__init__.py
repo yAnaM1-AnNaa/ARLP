@@ -3,6 +3,7 @@ from .open_vocab_detector import (
     DetectionResult,
     OpenVocabDetector,
     YOLOWorldDetector,
+    GroundingDINODetector,
     build_open_vocab_detector,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "DetectionResult",
     "OpenVocabDetector",
     "YOLOWorldDetector",
+    "GroundingDINODetector",
     "build_open_vocab_detector",
 ]

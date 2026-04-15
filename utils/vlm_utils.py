@@ -12,8 +12,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
 
-from sentence_transformers import SentenceTransformer
-sentence_transformer_model = SentenceTransformer("all-MiniLM-L6-v2")
+# from sentence_transformers import SentenceTransformer
+# sentence_transformer_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
 ##############################################

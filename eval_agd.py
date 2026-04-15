@@ -1,102 +1,35 @@
 import os
-import sys
-
-import wandb
 import matplotlib.pyplot as plt
-import json
 import numpy as np
-import math
-import copy
 
-import torch
-import torch.nn.functional as F
-
-from utils.file_utils import load_config
-from inference import AffordanceInference
-from utils.vlm_utils import get_text_embedding_options
 from PIL import Image
 
 from utils.eval_utils import (
     cal_kl, cal_sim, cal_nss
 )
-from utils.img_utils import grid_visualize, transform_imgs
+from utils.img_utils import grid_visualize
 
 import argparse
 from tqdm import tqdm
 from eval_pano import overlay_heatmap
-
-### Util functions
-def output_upsample(out, target_size, mode):
-    """
-    upsample output to target size
-    """
-    out = torch.tensor(out).unsqueeze(0).unsqueeze(0)
-    if mode == "repeat":
-        return F.interpolate(out, size=target_size, mode="nearest").squeeze().numpy()
-    elif mode == "bilinear":
-        return F.interpolate(out, size=target_size, mode="bilinear", align_corners=False, antialias=True).squeeze().numpy()
-    else:
-        raise NotImplementedError
-
-
-def resize_to_multiple_of_14(img, max_size=672):
-    """
-    Resize image so that h and w are multiples of 14 (required for inference)
-    Optionally limit the maximum size of the longer side
-    
-    Args:
-        img: Input image as numpy array
-        max_size: Maximum length of the longer side (optional)
-    
-    Returns:
-        resized image and original shape for later restoration
-    """
-    original_h, original_w = img.shape[:2]
-    
-    # Start with original dimensions
-    target_h, target_w = original_h, original_w
-    
-    # If max_size is specified, scale down if necessary
-    if max_size is not None:
-        max_dim = max(original_h, original_w)
-        if max_dim > max_size:
-            scale = max_size / max_dim
-            target_h = int(original_h * scale)
-            target_w = int(original_w * scale)
-    
-    # Find nearest dimensions that are multiples of 14
-    new_h = ((target_h + 13) // 14) * 14  # Round up to nearest multiple of 14
-    new_w = ((target_w + 13) // 14) * 14  # Round up to nearest multiple of 14
-    
-    # Resize image
-    if len(img.shape) == 3:
-        resized_img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-    else:
-        # Handle grayscale
-        resized_img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-    
-    return resized_img, (original_h, original_w)
-    
+from pano_inference import build_pano_inference
 
 ### Eval on AGD20K
 def eval():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True, help="Path to config YAML file")
-    parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
-    parser.add_argument("--agd_root", required=True, help="Path to AGD20K root")
-    parser.add_argument("--viz_dir", required=False, default=None, help="Path to save visualization")
+    parser.add_argument("--config", default='configs/oai_vitl_cot.yaml', help="Path to config YAML file")
+    parser.add_argument("--checkpoint", default='logs/finetune_1/20260414/finetune/ckpts/best.pth', help="Path to model checkpoint")
+    parser.add_argument("--agd_root", default='dataset/dataset6/Seen/testset', help="Path to AGD20K root")
+    parser.add_argument("--viz_dir", required=False, default='runs/eval_pano_eazy_groundDINO', help="Path to save visualization")
+    parser.add_argument("--det-backend", default="grounding_dino", help="Detector backend name")
+    parser.add_argument("--det-model", default="/root/autodl-tmp/yolo/models/grounding-dino-base", help="Detector model path or model name")
+    parser.add_argument("--det-conf", type=float, default=0.2, help="Detection confidence")
+    parser.add_argument("--det-iou", type=float, default=0.7, help="Detection NMS IoU")
+    parser.add_argument("--max-det", type=int, default=20, help="Maximum detections per image")
+    parser.add_argument("--box-expand-ratio", type=float, default=0.0, help="Optional box expansion ratio before crop inference")
+    parser.add_argument("--heatmap-thresh", type=float, default=None, help="Optional threshold after local heatmaps are pasted back")
     
     args = parser.parse_args()
-    
-    ### Load model
-    # Load config for additional settings
-    cfg = load_config(args.config)
-
-    # build inference
-    text_embedding_option = "embeddings_oai"
-    print(f"Using text embedding option: {text_embedding_option}")
-    text_embedding_func = get_text_embedding_options(text_embedding_option)
-    inference = AffordanceInference(args.config, args.checkpoint, text_embedding_func)
 
     ### Load eval data
     if args.viz_dir is not None:
@@ -107,18 +40,42 @@ def eval():
 
     # build all info
     eval_set_info = []
-    # Rephrase to disambiguate for specific action-object combinations
+    # One prompt per {affordance/action}/{object} directory in dataset6v2.
     disambiguation_set = {
-        ("hit", "axe"): "handle of axe to hold during hitting",
-        ("ride", "bicycle"): "region to sit on and push the bicycle",
-        ("pour", "cup"): "handle of the cup to hold while pouring",
-        ("wash", "cup"): "rim of the cup to wash",
-        ("hold", "cup"): "handle to hold the cup",
-        ("bathe", "bathtub"): "region to sit in while bathing",
-        ("sit_on", "sofa_seat"): "region to sit on and relax",
-        ("open", "door"): "push to open the door and enter the room behind it",
-        ("place", "table"): "top surface of the table to place objects on",
+        ("bathe", "bathtub"): "inside basin surface of the bathtub where a person sits or lies while bathing",
+        ("climb", "stairway"): "horizontal step surfaces of the stairway for placing feet while climbing",
+        ("display", "screen"): "front screen surface that displays visual information",
+        ("drop", "garbage"): "opening or inner container region where garbage should be dropped",
+        ("heating", "microwave"): "interior cavity of the microwave where items are placed for heating",
+        ("lean_back", "backrest"): "front support surface of the backrest where the back leans",
+        ("lie", "bed"): "top mattress surface of the bed where a person lies down",
+        ("light", "lamp"): "light-emitting bulb or shade area of the lamp",
+        ("look_through", "window"): "transparent glass pane area of the window to look through",
+        ("lying_on", "pillow"): "soft top surface of the pillow where the head rests",
+        ("open", "door"): "handle or edge region of the door used to open it",
+        ("place", "table"): "flat top surface of the table where objects are placed",
+        ("pull", "drawer"): "front handle or grip region of the drawer used for pulling",
+        ("reflect_image", "mirror"): "reflective front surface of the mirror",
+        ("refrigerate", "refrigerator"): "interior storage area of the refrigerator where items are kept cold",
+        ("rest_arm", "armset"): "upper support surface of the armrest where the arm rests",
+        ("sit", "seat"): "top sitting surface of the seat where a person sits",
+        ("swing_open", "cabinet_door"): "handle or outer edge region of the cabinet door used to swing it open",
+        ("wash", "sink"): "basin area of the sink where washing happens",
     }
+
+    dataset_pairs = {
+        (action_name, obj_name)
+        for action_name in os.listdir(agd_gt_dir)
+        for obj_name in os.listdir(os.path.join(agd_gt_dir, action_name))
+        if os.path.isdir(os.path.join(agd_gt_dir, action_name, obj_name))
+    }
+    if set(disambiguation_set) != dataset_pairs:
+        missing = sorted(dataset_pairs - set(disambiguation_set))
+        extra = sorted(set(disambiguation_set) - dataset_pairs)
+        raise ValueError(
+            "disambiguation_set must match GT/{aff}/{obj} directories. "
+            f"missing={missing}, extra={extra}"
+        )
     
     for action_name in os.listdir(agd_gt_dir):
         action_dir = os.path.join(agd_gt_dir, action_name)
@@ -139,15 +96,27 @@ def eval():
                     "img_path": img_path,
                     "gt_path": gt_path,
                     "text_desc": text_desc,
+                    "obj_name": obj_name,
+                    "det_class": obj_name.replace("_", " "),
                     "viz_name": f"{action_name}_{obj_name}_{i}" # for visualization
                 })
+
+    detector_classes = sorted({item["det_class"] for item in eval_set_info})
+    print(f"Using pano-style detector-crop inference with {len(detector_classes)} detector classes.")
+    pipeline = build_pano_inference(
+        config_path=args.config,
+        checkpoint_path=args.checkpoint,
+        detector_backend=args.det_backend,
+        detector_model=args.det_model,
+        detector_classes=detector_classes,
+    )
 
     KLs = []
     SIMs = []
     NSSs_01 = [] # original NSS 
     NSSs_05 = [] # NSS with threshold 0.5 (see Appendix B for details)
+    no_detection_count = 0
     
-    idx = 0
     for data in tqdm(eval_set_info):
         # load eval data
         img = np.array(Image.open(data["img_path"]).convert("RGB"))
@@ -157,28 +126,39 @@ def eval():
         if len(img.shape) == 2: # handle grayscale images
             img = np.stack([img, img, img], axis=-1)
 
-        # Resize image to satisfy multiple-of-14 constraint for inference
-        img_resized, original_shape = resize_to_multiple_of_14(img, max_size=672)
+        pipeline.detector.set_classes([data["det_class"]])
+        detections = pipeline.detect(
+            image_rgb=img,
+            conf=args.det_conf,
+            iou=args.det_iou,
+            max_det=args.max_det,
+        )
+        if len(detections) == 0:
+            no_detection_count += 1
 
-        # inference on resized image
-        out = inference.predict(img_resized, text, thresh=None)
-        
-        # Resize output back to original image dimensions
-        out = output_upsample(out, original_shape, mode="bilinear")
+        result = pipeline.run_on_detections(
+            image_rgb=img,
+            detections=detections,
+            affordance_text=text,
+            box_expand_ratio=args.box_expand_ratio,
+            heatmap_thresh=args.heatmap_thresh,
+        )
+        out = result["heatmap"]
 
         # postprocess
         out = np.clip(out, 1e-3, 1-(1e-3))
 
         # save visualization of output
-        overlay_out = overlay_heatmap(img, out, alpha=0.3)
-        overlay_gt = overlay_heatmap(img, gt_mask, alpha=0.3)
-        grid_visualize(
-            img_list=[img, overlay_out, overlay_gt],
-            name_list=["orig img", "model pred", "gt"],
-            save_path=f"{args.viz_dir}/{data['viz_name']}.png",
-            n_rows=1,
-            title=f"{data['viz_name']}"
-        )
+        if args.viz_dir is not None:
+            overlay_out = overlay_heatmap(img, out, alpha=0.3)
+            overlay_gt = overlay_heatmap(img, gt_mask, alpha=0.3)
+            grid_visualize(
+                img_list=[overlay_out, overlay_gt],
+                name_list=["model pred", "gt"],
+                save_path=f"{args.viz_dir}/{data['viz_name']}.png",
+                n_rows=1,
+                title=f"{data['viz_name']}"
+            )
 
         # compute metrics
         kld, sim, nss_01, nss_05 = cal_kl(out, gt_mask), cal_sim(out, gt_mask), cal_nss(out, gt_mask, threshold=0.1), cal_nss(out, gt_mask, threshold=0.5)
@@ -188,6 +168,7 @@ def eval():
         NSSs_05.append(nss_05)
 
     print(f"KL: {np.mean(KLs)}, SIM: {np.mean(SIMs)}, NSS: {np.mean(NSSs_01)}, NSS_05: {np.mean(NSSs_05)}")
+    print(f"No detections: {no_detection_count}/{len(eval_set_info)}")
 
 if __name__ == "__main__":
     eval()
