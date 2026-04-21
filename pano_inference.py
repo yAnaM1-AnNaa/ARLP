@@ -448,18 +448,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pano affordance inference with pluggable open-vocabulary detectors")
     parser.add_argument("--image", default=None, help="Single input RGB image path")
     parser.add_argument("--img-dir", default='dataset/tests', help="Directory containing input RGB images")
-    parser.add_argument("--config", default='configs/oai_vitl_cot.yaml', help="ARLP config YAML")
-    parser.add_argument("--checkpoint", default='logs/finetune_1/20260414/finetune/ckpts/best.pth', help="ARLP checkpoint path")# logs/20260413/oai_vitl_cot/ckpts/final.pth
+    parser.add_argument("--config", default='configs/oai_vitl_registers_cot.yaml', help="ARLP config YAML")
+    parser.add_argument("--checkpoint", default='logs/20260415/with_registers/ckpts/best.pth', help="ARLP checkpoint path")# logs/20260413/oai_vitl_cot/ckpts/final.pth
     parser.add_argument("--det-backend", default="grounding_dino", help="Detector backend name")
     parser.add_argument("--det-model", default="/root/autodl-tmp/yolo/models/grounding-dino-base", help="Detector model path or model name")
-    parser.add_argument("--det-classes", default="door, wooden_door", help="Comma-separated open-vocabulary detection classes")
-    parser.add_argument("--affordance-text", default='doors can be opened or closed, heading to another place.', help="Text query passed to the ARLP affordance model")
+    parser.add_argument("--det-classes", default="armrest, handrail, secure hand", help="Comma-separated open-vocabulary detection classes")
+    parser.add_argument("--affordance-text", default='people can rely their arms on this place to rest. armrest normally locates on both sides of an armchair', help="Text query passed to the ARLP affordance model")
     parser.add_argument("--det-conf", type=float, default=0.3, help="Detection confidence")
     parser.add_argument("--det-iou", type=float, default=0.7, help="Detection NMS IoU")
     parser.add_argument("--max-det", type=int, default=20, help="Maximum detections")
     parser.add_argument("--box-expand-ratio", type=float, default=0.0, help="Optional box expansion ratio before cropping")
     parser.add_argument("--heatmap-thresh", type=float, default=None, help="Optional threshold applied after all local heatmaps are pasted back")
-    parser.add_argument("--output-dir", default='runs/pano_inference_groundDINO', help="Directory to save outputs")
+    parser.add_argument("--output-dir", default='runs/pano_inference_register_groundDINO', help="Directory to save outputs")
     args = parser.parse_args()
     if not args.image and not args.img_dir:
         parser.error("One of --image or --img-dir is required.")

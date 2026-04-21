@@ -8,7 +8,7 @@ model:
   norm: null
   activation: "lrelu"
   lang_emb_dim: 1024
-  film_mode: "zero"
+  film_mode: "rand"
 
 text_embedding: "embeddings_oai"
 

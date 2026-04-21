@@ -141,10 +141,17 @@ class ResearchSql():
             status TEXT,
             vlm_response TEXT,
             error_msg TEXT,
+            text_embedding TEXT,
+            sim_proj TEXT,
             UNIQUE(category_name, instance_name, frame_idx)
         )
         '''
         self.cursor.execute(query)
+        existing_columns = {row[1] for row in self.cursor.execute("PRAGMA table_info(pipeline_info)")}
+        if "text_embedding" not in existing_columns:
+            self.cursor.execute("ALTER TABLE pipeline_info ADD COLUMN text_embedding TEXT")
+        if "sim_proj" not in existing_columns:
+            self.cursor.execute("ALTER TABLE pipeline_info ADD COLUMN sim_proj TEXT")
         self.conn.commit()
 
     # def _init_table_content(self, base_dir):
@@ -161,21 +168,21 @@ class ResearchSql():
     #             for instance_name in instance_keys:
     #                 self.add_data(category_name, instance_name, '', '', '', '', '')
 
-    def add_data(self, category_name, instance_name, frame_idx, clustered_img_path, status, vlm_response, error_msg):
+    def add_data(self, category_name, instance_name, frame_idx, clustered_img_path="", status="", vlm_response="", error_msg="", text_embedding="", sim_proj=""):
         query = '''
-        INSERT INTO pipeline_info (category_name, instance_name, frame_idx, clustered_img_path, status, vlm_response, error_msg)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO pipeline_info (category_name, instance_name, frame_idx, clustered_img_path, status, vlm_response, error_msg, text_embedding, sim_proj)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(category_name, instance_name, frame_idx) 
         DO UPDATE SET 
             clustered_img_path = excluded.clustered_img_path,
             status = excluded.status,
             error_msg = excluded.error_msg
         '''
-        self.cursor.execute(query, (category_name, instance_name, frame_idx, clustered_img_path, status, vlm_response, error_msg))
+        self.cursor.execute(query, (category_name, instance_name, frame_idx, clustered_img_path, status, vlm_response, error_msg, text_embedding, sim_proj))
         self.conn.commit()
 
     def update_content(self, category_name, instance_name, frame_idx,  
-                       clustered_img_path=None, status=None, vlm_response=None, error_msg=None):
+                       clustered_img_path=None, status=None, vlm_response=None, error_msg=None, text_embedding=None, sim_proj=None):
         update_fields = []
         update_values = []
 
@@ -198,6 +205,14 @@ class ResearchSql():
         if error_msg is not None:
             update_fields.append('error_msg = ?')
             update_values.append(error_msg)
+
+        if text_embedding is not None:
+            update_fields.append('text_embedding = ?')
+            update_values.append(text_embedding)
+
+        if sim_proj is not None:
+            update_fields.append('sim_proj = ?')
+            update_values.append(sim_proj)
 
         if not update_fields:
             raise ValueError('No content provided to update.')

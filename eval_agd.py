@@ -18,9 +18,9 @@ from pano_inference import build_pano_inference
 def eval():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default='configs/oai_vitl_cot.yaml', help="Path to config YAML file")
-    parser.add_argument("--checkpoint", default='logs/finetune_1/20260414/finetune/ckpts/best.pth', help="Path to model checkpoint")
-    parser.add_argument("--agd_root", default='dataset/dataset6/Seen/testset', help="Path to AGD20K root")
-    parser.add_argument("--viz_dir", required=False, default='runs/eval_pano_eazy_groundDINO', help="Path to save visualization")
+    parser.add_argument("--checkpoint", default='logs/20260413/oai_vitl_cot/ckpts/best.pth', help="Path to model checkpoint")
+    parser.add_argument("--agd_root", default='dataset/dataset6/Unseen/testset', help="Path to AGD20K root")
+    parser.add_argument("--viz_dir", required=False, default=None, help="Path to save visualization")
     parser.add_argument("--det-backend", default="grounding_dino", help="Detector backend name")
     parser.add_argument("--det-model", default="/root/autodl-tmp/yolo/models/grounding-dino-base", help="Detector model path or model name")
     parser.add_argument("--det-conf", type=float, default=0.2, help="Detection confidence")
@@ -41,27 +41,42 @@ def eval():
     # build all info
     eval_set_info = []
     # One prompt per {affordance/action}/{object} directory in dataset6v2.
+    # disambiguation_set = {
+    #     ("bathe", "bathtub"): "Inside basin surface of the bathtub where a person sits or lies while bathing. Focus on the smooth inner bottom and side-contact area that supports the body, not the outer wall or floor around the tub.",
+    #     ("climb", "stairway"): "Horizontal step surfaces of the stairway where a foot is placed while climbing. Focus on the flat treads that support the feet, not the vertical risers, railings, or side walls.",
+    #     ("display", "screen"): "Front screen surface that displays visual information to a viewer. Focus on the active flat display panel, not the bezel, stand, buttons, or surrounding frame.",
+    #     ("drop", "garbage"): "Opening or inner container region where garbage should be dropped. Focus on the accessible mouth, bin cavity, or exposed receptacle area, not the outer shell or nearby floor.",
+    #     ("heating", "microwave"): "Interior cavity of the microwave where items are placed for heating. Focus on the inner tray, shelf, and chamber area that holds food, not the door front, buttons, or exterior casing.",
+    #     ("lean_back", "backreat"): "Front support surface of the backrest where a person's back leans. Focus on the broad rear support pad or panel behind the seat, not the seat cushion, legs, or outer frame.",
+    #     ("lie", "bed"): "Top mattress surface of the bed where a person lies down. Focus on the broad horizontal sleeping area that supports the body, not the headboard, bed frame, pillows, or floor.",
+    #     ("light", "lamp"): "Light-emitting bulb, shade opening, or illuminated shade area of the lamp. Focus on the part that produces or diffuses light, not the pole, base, cord, or surrounding furniture.",
+    #     ("look_through", "window"): "Transparent glass pane area of the window that a person looks through. Focus on the see-through pane surface, not the frame, wall, sill, handle, or curtain.",
+    #     ("lying_on", "pillow"): "Soft top surface of the pillow where the head rests. Focus on the cushioned upper contact area, not the bed, blanket, pillow edge seam, or surrounding objects.",
+    #     ("open", "door"): "Handle, knob, grip, or exposed edge region of the door used to open it. Focus on the part a hand contacts to pull or push the door, not the broad decorative door panel or nearby wall.",
+    #     ("place", "table"): "Flat top surface of the table where objects are placed. Focus on the horizontal tabletop support area, not the legs, side panels, floor, or items already sitting on it.",
+    #     ("pull", "drawer"): "Front handle, knob, groove, or grip region of the drawer used for pulling it outward. Focus on the hand-contact pull area, not the drawer interior, cabinet frame, or surrounding furniture.",
+    #     ("reflect_image", "mirror"): "Reflective front surface of the mirror where images appear. Focus on the smooth reflective glass area, not the frame, wall, stand, or nearby objects.",
+    #     ("refrigerate", "refrigerator"): "Interior storage area of the refrigerator where items are kept cold. Focus on the shelves, bins, and inner compartment surfaces that hold food, not the exterior door, handle, or control panel.",
+    #     ("rest_arm", "armset"): "Upper support surface of the armrest where a person's arm rests. Focus on the elongated top contact area beside the seat, not the seat cushion, backrest, legs, or side frame.",
+    #     ("sit", "sofa_seat"): "Top sitting surface of the seat where a person places their body weight. Focus on the horizontal cushion or sitting platform, not the backrest, legs, armrests, or surrounding floor.",
+    #     ("swing_open", "cabinet_door"): "Handle, knob, pull edge, or outer graspable region of the cabinet door used to swing it open. Focus on the hand-contact opening part, not the fixed cabinet body, shelves, or adjacent wall.",
+    #     ("wash", "sink"): "Basin area of the sink where washing takes place. Focus on the inner bowl, drain area, and water-contact surface, not the faucet, countertop, cabinet, or surrounding wall.",
+    # }
     disambiguation_set = {
-        ("bathe", "bathtub"): "inside basin surface of the bathtub where a person sits or lies while bathing",
-        ("climb", "stairway"): "horizontal step surfaces of the stairway for placing feet while climbing",
-        ("display", "screen"): "front screen surface that displays visual information",
-        ("drop", "garbage"): "opening or inner container region where garbage should be dropped",
-        ("heating", "microwave"): "interior cavity of the microwave where items are placed for heating",
-        ("lean_back", "backrest"): "front support surface of the backrest where the back leans",
-        ("lie", "bed"): "top mattress surface of the bed where a person lies down",
-        ("light", "lamp"): "light-emitting bulb or shade area of the lamp",
-        ("look_through", "window"): "transparent glass pane area of the window to look through",
-        ("lying_on", "pillow"): "soft top surface of the pillow where the head rests",
-        ("open", "door"): "handle or edge region of the door used to open it",
-        ("place", "table"): "flat top surface of the table where objects are placed",
-        ("pull", "drawer"): "front handle or grip region of the drawer used for pulling",
-        ("reflect_image", "mirror"): "reflective front surface of the mirror",
-        ("refrigerate", "refrigerator"): "interior storage area of the refrigerator where items are kept cold",
-        ("rest_arm", "armset"): "upper support surface of the armrest where the arm rests",
-        ("sit", "seat"): "top sitting surface of the seat where a person sits",
-        ("swing_open", "cabinet_door"): "handle or outer edge region of the cabinet door used to swing it open",
-        ("wash", "sink"): "basin area of the sink where washing happens",
+        ("bathe", "bathtub"): "Inside basin surface of the bathtub where a person sits or lies while bathing. Focus on the smooth inner bottom and side-contact area that supports the body, not the outer wall or floor around the tub.",
+        ("climb", "stairway"): "Horizontal step surfaces of the stairway where a foot is placed while climbing. Focus on the flat treads that support the feet, not the vertical risers, railings, or side walls.",
+        ("drop", "garbage"): "Opening or inner container region where garbage should be dropped. Focus on the accessible mouth, bin cavity, or exposed receptacle area, not the outer shell or nearby floor.",
+        ("heating", "microwave"): "Interior cavity of the microwave where items are placed for heating. Focus on the inner tray, shelf, and chamber area that holds food, not the door front, buttons, or exterior casing.",        ("light", "lamp"): "Light-emitting bulb, shade opening, or illuminated shade area of the lamp. Focus on the part that produces or diffuses light, not the pole, base, cord, or surrounding furniture.",
+        ("look_through", "window"): "Transparent glass pane area of the window that a person looks through. Focus on the see-through pane surface, not the frame, wall, sill, handle, or curtain.",
+        ("lying_on", "pillow"): "Soft top surface of the pillow where the head rests. Focus on the cushioned upper contact area, not the bed, blanket, pillow edge seam, or surrounding objects.",
+        ("open", "door"): "Handle, knob, grip, or exposed edge region of the door used to open it. Focus on the part a hand contacts to pull or push the door, not the broad decorative door panel or nearby wall.",
+        ("place", "table"): "Flat top surface of the table where objects are placed. Focus on the horizontal tabletop support area, not the legs, side panels, floor, or items already sitting on it.",
+        ("pull", "drawer"): "Front handle, knob, groove, or grip region of the drawer used for pulling it outward. Focus on the hand-contact pull area, not the drawer interior, cabinet frame, or surrounding furniture.",
+        ("reflect_image", "mirror"): "Reflective front surface of the mirror where images appear. Focus on the smooth reflective glass area, not the frame, wall, stand, or nearby objects.",
+        ("wash", "sink"): "Basin area of the sink where washing takes place. Focus on the inner bowl, drain area, and water-contact surface, not the faucet, countertop, cabinet, or surrounding wall.",
+        ("light", "lamp"): "Light-emitting bulb, shade opening, or illuminated shade area of the lamp. Focus on the part that produces or diffuses light, not the pole, base, cord, or surrounding furniture.",
     }
+
 
     dataset_pairs = {
         (action_name, obj_name)

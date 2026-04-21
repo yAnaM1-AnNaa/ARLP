@@ -200,7 +200,7 @@ class Conv2DFiLMNet(nn.Module):
                  activation: str = 'relu',
 
                  lang_emb_dim: int = 256, 
-                 film_mode: str = 'zero',
+                 film_mode: str = 'rand',
                  film_place: str = 'after'
                  ):
         super(Conv2DFiLMNet, self).__init__()

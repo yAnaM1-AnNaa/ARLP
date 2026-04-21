@@ -81,9 +81,9 @@ def resize_to_multiple_of_14(img, max_size=672):
 def eval():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default='configs/oai_vitl_cot.yaml', help="Path to config YAML file")
-    parser.add_argument("--checkpoint", default='logs/finetune_1/20260414/finetune/ckpts/best.pth', help="Path to model checkpoint")
-    parser.add_argument("--agd_root", default='dataset/dataset6/Seen/testset', help="Path to AGD20K root")
-    parser.add_argument("--viz_dir", rdefault='runs/eval_pano_eazy', default=None, help="Path to save visualization")
+    parser.add_argument("--checkpoint", default='logs/20260413/oai_vitl_cot/ckpts/best.pth', help="Path to model checkpoint")
+    parser.add_argument("--agd_root", default='dataset/agd20k/AGD20K/Seen/testset', help="Path to AGD20K root")
+    parser.add_argument("--viz_dir", default='runs/eval_agd_seen_test', help="Path to save visualization")
     
     args = parser.parse_args()
     

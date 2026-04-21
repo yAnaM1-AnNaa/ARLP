@@ -5,11 +5,13 @@ import glob
 import h5py
 import numpy as np
 from tqdm import tqdm
+from PIL import Image
 import json
 import ast
 import logging
 import re
 import sqlite3
+from pathlib import Path
 
 from src.fusion import create_fusion
 from src.cluster import cluster
@@ -20,6 +22,7 @@ from utils.img_utils import grid_visualize, load_pretrained_dino
 from utils.file_utils import store_or_update_dataset, save_image, save_response
 from utils.vlm_utils import get_text_embedding_options
 from utils.file_utils import load_config, store_logs, ResearchSql
+from scripts.proposal_to_sim_proj import proposal_to_heatmaps, _slugify
 from transformers import AutoProcessor, CLIPModel, AutoTokenizer, CLIPTextModelWithProjection
 
 
@@ -81,6 +84,104 @@ def _normalize_region_matching(region_matching):
               normalized[color] = descriptions
     return normalized
 
+
+
+def build_text_embedding_json(region_matching: dict, text_embedding_func, logger, category_name: str, instance_key: str, frame_idx: int):
+    """Build DB JSON payload for region-matching text embeddings."""
+    text_embedding = {}
+    for color, descriptions in region_matching.items():
+        description_list = parse_description_list(descriptions)
+        if not description_list:
+            logger.warning(
+                'Skip empty descriptions for %s_%s_%s color=%s',
+                category_name,
+                instance_key,
+                frame_idx,
+                color,
+            )
+            continue
+
+        embeddings = []
+        for description in description_list:
+            embedding = np.asarray(text_embedding_func(description), dtype=np.float32)
+            embeddings.append(embedding.tolist())
+        text_embedding[color] = embeddings
+
+    if not text_embedding:
+        raise ValueError("No text embeddings were generated from region_matching.")
+    return text_embedding
+
+
+def write_text_embeddings_to_h5(instance, embedding_type: str, text_embedding: dict):
+    """Keep the legacy HDF5 embedding layout in sync with the SQL payload."""
+    if embedding_type not in instance.keys():
+        embedding_group = instance.create_group(embedding_type)
+    else:
+        embedding_group = instance[embedding_type]
+
+    for color, embeddings in text_embedding.items():
+        store_or_update_dataset(embedding_group, color, np.asarray(embeddings, dtype=np.float32))
+
+
+def build_sim_proj_json(
+    proposal_img_path: str,
+    sim_proj_dir: str,
+    category_name: str,
+    instance_key: str,
+    frame_idx: int,
+    region_matching: dict,
+    tolerance: float,
+    min_pixels: int,
+):
+    """Generate proposal-mask sim_proj files and return the DB JSON payload."""
+    proposal_img_path = Path(proposal_img_path)
+    sim_proj_dir = Path(sim_proj_dir)
+    sim_proj_dir.mkdir(parents=True, exist_ok=True)
+
+    proposal_img = np.asarray(Image.open(proposal_img_path).convert("RGB"))
+    base_name = "_".join(
+        _slugify(part)
+        for part in (category_name, instance_key, str(frame_idx), "proposal")
+    )
+
+    sim_proj = {}
+    manifest = {
+        "proposal_img": str(proposal_img_path),
+        "category_name": category_name,
+        "instance_name": instance_key,
+        "frame_idx": str(frame_idx),
+        "shape": list(proposal_img.shape[:2]),
+        "tolerance": tolerance,
+        "min_pixels": min_pixels,
+        "colors": [],
+    }
+
+    for response_color, palette_name, heatmap, pixel_count in proposal_to_heatmaps(
+        proposal_img,
+        tolerance=tolerance,
+        min_pixels=min_pixels,
+        vlm_response=region_matching,
+    ):
+        color_slug = _slugify(response_color)
+        npy_path = sim_proj_dir / f"{base_name}_{color_slug}.npy"
+        np.save(npy_path, heatmap.astype(np.float32))
+        sim_proj[response_color] = str(npy_path.resolve())
+        manifest["colors"].append({
+            "color": response_color,
+            "palette_color": palette_name,
+            "heatmap_npy": str(npy_path.resolve()),
+            "pixel_count": pixel_count,
+            "vlm_response": region_matching.get(response_color),
+        })
+
+    if not sim_proj:
+        raise ValueError("No sim_proj files were generated from proposal image.")
+
+    manifest_path = sim_proj_dir / f"{base_name}_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    return sim_proj
 
 def proxy_off():
     """
@@ -295,9 +396,10 @@ def process_instance(instance, instance_key: str,
     logger.record(f"Saved proposal (cluster) image to: {query_proposal_path}")
 
 
-def process_category(h5_path, db, dino_model, query_save_dir, embedding_type, text_embedding_func,
+def process_category(h5_path, db, dino_model, query_save_dir, sim_proj_dir, embedding_type, text_embedding_func,
                      client, model_name, logger,
-                     use_existing_cluster=True, use_data_link_segs=False, top_k=3):
+                     use_existing_cluster=True, use_data_link_segs=False, top_k=3,
+                     sim_proj_tolerance=8.0, sim_proj_min_pixels=1):
     category_name = os.path.basename(h5_path).split('.')[0] # eg. chair.h5 -> chair
     with h5py.File(h5_path, 'r+') as h5_file:
         instance_keys = list(h5_file.keys())  # chair1, chair2...
@@ -330,10 +432,48 @@ def process_category(h5_path, db, dino_model, query_save_dir, embedding_type, te
                     f'{category_name}_{instance_key}_{frame_idx}_proposal.png'
                 )
 
-                if status == 'Done':
-                    print(f'Using existing cluster for {category_name}_{instance_key}_{frame_idx}')
-                    logger.record(f'Using existing cluster for {category_name}_{instance_key}_{frame_idx}, skipping...')
+                if status == 'Done' and row.get('text_embedding') and row.get('sim_proj'):
+                    print(f'Using existing complete row for {category_name}_{instance_key}_{frame_idx}')
+                    logger.record(f'Using existing complete row for {category_name}_{instance_key}_{frame_idx}, skipping...')
                     continue
+
+                if status == 'Done' and row.get('vlm_response') and row.get('clustered_img_path'):
+                    try:
+                        region_matching = _normalize_region_matching(json.loads(row['vlm_response']))
+                        text_embedding_json = build_text_embedding_json(
+                            region_matching,
+                            text_embedding_func,
+                            logger,
+                            category_name,
+                            instance_key,
+                            frame_idx,
+                        )
+                        write_text_embeddings_to_h5(instance, embedding_type, text_embedding_json)
+                        sim_proj_json = build_sim_proj_json(
+                            row['clustered_img_path'],
+                            sim_proj_dir,
+                            category_name,
+                            instance_key,
+                            frame_idx,
+                            region_matching,
+                            tolerance=sim_proj_tolerance,
+                            min_pixels=sim_proj_min_pixels,
+                        )
+                        h5_file.flush()
+                        db.update_content(
+                            category_name,
+                            instance_key,
+                            frame_idx,
+                            text_embedding=json.dumps(text_embedding_json, ensure_ascii=False),
+                            sim_proj=json.dumps(sim_proj_json, ensure_ascii=False),
+                            error_msg='',
+                        )
+                        logger.record('Populated missing training columns for existing Done row %s_%s_%s', category_name, instance_key, frame_idx)
+                        continue
+                    except Exception as e:
+                        db.update_content(category_name, instance_key, frame_idx, status='Failed', error_msg=str(e))
+                        logger.exception('Failed to populate training columns for existing row %s_%s_%s', category_name, instance_key, frame_idx)
+                        continue
 
                 try:
                     process_instance(
@@ -378,32 +518,37 @@ def process_category(h5_path, db, dino_model, query_save_dir, embedding_type, te
                     )
                     logger.record('Region matching for %s_%s_%s: %s', category_name, instance_key, frame_idx, region_matching)
 
-                    embedding_dict = {}
-                    for color, descriptions in region_matching.items():
-                        description_list = parse_description_list(descriptions)
-                        if not description_list:
-                            logger.warning(
-                                'Skip empty descriptions for %s_%s_%s color=%s',
-                                category_name,
-                                instance_key,
-                                frame_idx,
-                                color,
-                            )
-                            continue
-                        embedding = [text_embedding_func(description) for description in description_list]
-                        embedding = np.array(embedding)
-                        embedding_dict[color] = embedding
+                    text_embedding_json = build_text_embedding_json(
+                        region_matching,
+                        text_embedding_func,
+                        logger,
+                        category_name,
+                        instance_key,
+                        frame_idx,
+                    )
+                    write_text_embeddings_to_h5(instance, embedding_type, text_embedding_json)
 
-                    if embedding_type not in instance.keys():
-                        embedding_group = instance.create_group(embedding_type)
-                    else:
-                        embedding_group = instance[embedding_type]
-
-                    for color, embedding in embedding_dict.items():
-                        store_or_update_dataset(embedding_group, color, embedding)
+                    sim_proj_json = build_sim_proj_json(
+                        proposal_img_path,
+                        sim_proj_dir,
+                        category_name,
+                        instance_key,
+                        frame_idx,
+                        region_matching,
+                        tolerance=sim_proj_tolerance,
+                        min_pixels=sim_proj_min_pixels,
+                    )
 
                     h5_file.flush()
-                    db.update_content(category_name, instance_key, frame_idx, status='Done', error_msg='')
+                    db.update_content(
+                        category_name,
+                        instance_key,
+                        frame_idx,
+                        status='Done',
+                        error_msg='',
+                        text_embedding=json.dumps(text_embedding_json, ensure_ascii=False),
+                        sim_proj=json.dumps(sim_proj_json, ensure_ascii=False),
+                    )
                 except Exception as e:
                     db.update_content(category_name, instance_key, frame_idx, status='Failed', error_msg=str(e))
                     logger.exception('Frame failed for %s_%s_%s', category_name, instance_key, frame_idx)
@@ -425,7 +570,9 @@ def main(args):
     use_data_link_segs = args.use_data_link_segs if args.use_data_link_segs is not None else False
     top_k = args.top_k if args.top_k is not None else 3
     query_save_dir = os.path.join(base_dir, 'vlm_query_imgs')
+    sim_proj_dir = args.sim_proj_dir or os.path.join(base_dir, 'sim_proj')
     os.makedirs(query_save_dir, exist_ok=True)
+    os.makedirs(sim_proj_dir, exist_ok=True)
 
     # Initialize DINO model
     dino_name = 'dinov2_vitl14'
@@ -448,9 +595,23 @@ def main(args):
             continue
         logger.record(f'Processing file: {name}')
         try:
-            process_category(h5_path, db, dino_model, query_save_dir, embedding_type, text_embedding_func,
-                         client=router_client, model_name=vlm_model_name, logger=logger,
-                         use_existing_cluster=True, use_data_link_segs=False, top_k=3)
+            process_category(
+                h5_path,
+                db,
+                dino_model,
+                query_save_dir,
+                sim_proj_dir,
+                embedding_type,
+                text_embedding_func,
+                client=router_client,
+                model_name=vlm_model_name,
+                logger=logger,
+                use_existing_cluster=True,
+                use_data_link_segs=use_data_link_segs,
+                top_k=top_k,
+                sim_proj_tolerance=args.sim_proj_tolerance,
+                sim_proj_min_pixels=args.sim_proj_min_pixels,
+            )
         except Exception as e:
             logger.exception('Category failed for %s', name)
             continue
@@ -466,6 +627,9 @@ if __name__ == '__main__':
     parser.add_argument('--embedding_type', type=str, default='embeddings_oai', choices=['embeddings_oai', 'embeddings_st'])
     parser.add_argument('--use_data_link_segs', action='store_true')
     parser.add_argument('--top_k', type=int, default=3)
+    parser.add_argument('--sim_proj_dir', type=str, default=None, help='Directory to save proposal-mask sim_proj .npy files')
+    parser.add_argument('--sim_proj_tolerance', type=float, default=8.0, help='RGB distance tolerance for proposal palette matching')
+    parser.add_argument('--sim_proj_min_pixels', type=int, default=1, help='Minimum pixels required per proposal color mask')
     parser.add_argument('--torch_path', type=str, default=None, help='Path to torch model cache directory')
     parser.add_argument('--vlm_model_name', type=str, default='qwen/qwen3.5-flash-02-23',
                         help='API VL model name (vision-capable)')
