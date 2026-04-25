@@ -1,0 +1,15 @@
+pano_detector: "grounding_dino-l"
+pano_detector_path: 'grounding_dino/grounding_dino_swint_ogc.pth'
+local_inferer: "steervit-l"
+local_inferer_path: 'steervit/steervit_dinov2_large.pth'
+
+box_expand_ratio: 0.0
+heatmap_thresh: 0.2
+max_det: 20
+
+
+steervit:
+  checkpoint: "steervit_dinov2_base.pth"
+  # Use "sigmoid" for affordance-finetuned checkpoints trained with BCE/Dice.
+  # Use "softmax" for the released SteerViT heatmap head behavior.
+  output_activation: "softmax"

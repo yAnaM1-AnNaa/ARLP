@@ -1,0 +1,5 @@
+Since this is a rookie program, this note mainly contains some explains of the project.
+
+# local inference
+Def __new__():
+__new__ 是创建对象时最先调用的方法，比 __init__ 更早

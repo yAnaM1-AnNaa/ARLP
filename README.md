@@ -38,8 +38,8 @@ sim_proj = 这句 affordance 对应颜色区域的热力图
 |------|------|-----------|
 | `src/inference.py` | 推理入口 (`AffordanceInference` 类) | `inference.py` |
 | `src/train.py` | 训练入口 (`Trainer` 类) | `train.py` / `src/train.py` |
-| `src/eval_agd.py` | AGD20K 数据集评估 | `eval_agd.py` |
-| `src/eval_pano.py` | 全景滑动窗口评估 | `eval_pano.py` |
+| `src/eval_agd.py` | AGD20K 数据集评估 | `eval_origin.py` / `eval_agd.py` |
+| `src/eval_pano.py` | 全景滑动窗口评估 | `eval_windowslide.py` |
 | `src/eval_pano_depth.py` | 带深度约束的全景评估 | 无 |
 | `src/eval_pano_multiscale.py` | 多尺度评估 | 无 |
 

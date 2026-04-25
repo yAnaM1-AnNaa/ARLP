@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, random_split
 import wandb
 
 from model.dataset import RegionSimDataset
-from model.network import Conv2DFiLMNet
+from model.LateFiLM_model import Conv2DFiLMNet
 from utils.file_utils import load_config
 from utils.img_utils import transform_imgs, load_pretrained_dino, get_dino_features_from_transformed_imgs
 

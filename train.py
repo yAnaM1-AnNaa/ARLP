@@ -18,7 +18,7 @@ from model.dataset import RegionSimDataset
 from utils.file_utils import load_config
 
 import wandb
-from model.network import Conv2DFiLMNet
+from model.LateFiLM_model import Conv2DFiLMNet
 from utils.img_utils import load_pretrained_dino, get_dino_features_from_transformed_imgs
 
 # =====================================================================

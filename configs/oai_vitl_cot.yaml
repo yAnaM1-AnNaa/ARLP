@@ -1,6 +1,13 @@
-dataset_bg_dir: None
+pano_detector: "grounding_dino-l"
+pano_detector_path: 'grounding_dino/grounding_dino_swint_ogc.pth'
+local_inferer: "LateFiLM"
+local_inferer_path: 'checkpoints/LateFiLM_vitl14.pth'
 
-model:
+dino_model_type: "dinov2_vitl14"
+dino_use_registers: False
+text_embedding_func: "embeddings_oai"
+
+model_structure:
   in_channels: 1024
   filters: [256, 64, 1]
   kernel_sizes: [3, 3, 1]
@@ -9,8 +16,6 @@ model:
   activation: "lrelu"
   lang_emb_dim: 1024
   film_mode: "rand"
-
-text_embedding: "embeddings_oai"
 
 optim:
   lr: 0.002
@@ -27,8 +32,8 @@ trainer:
   val_split: 0.1
 
 criterion: "BCE"
-torch_home: None
-
-dino_model_type: "dinov2_vitl14"
-dino_use_registers: False
-torch_home: None
+pano_detector_conf: 0.3
+pano_detector_iou: 0.7
+box_expand_ratio: 0.0
+heatmap_thresh: 0.2
+max_det: 20

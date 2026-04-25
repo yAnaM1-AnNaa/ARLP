@@ -1,4 +1,4 @@
-from .network import Conv2DFiLMNet
+from .LateFiLM_model import Conv2DFiLMNet
 from .open_vocab_detector import (
     DetectionResult,
     OpenVocabDetector,

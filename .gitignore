@@ -3,6 +3,7 @@ logs/
 wandb/
 dataset/
 */__pycache__/
+runs/
 .vscode/
 */ipynb_checkpoints
 panocontext
@@ -10,11 +11,5 @@ panobasic
 */.DS_Store
 panoContext_code
 docs/
-__pycache__/
-runs/
-
-utils/__pycache__/__init__.cpython-312.pyc
-*.pt
-*.pyc
-*.db
-
+*/*.db
+ckpt/*

@@ -1,3 +1,11 @@
+"""
+eval_origin.py - original AGD-style eval reference.
+
+Role:
+1. Keeps the original single-image local inference evaluation path.
+2. Does not use panorama sliding windows or detector-crop inference.
+3. Serves as the untouched baseline for checking changes introduced by this project.
+"""
 import os
 import sys
 

@@ -6,7 +6,7 @@ import torch
 import torchvision.transforms as T
 import matplotlib.pyplot as plt
 
-from model.network import Conv2DFiLMNet
+from model.LateFiLM_model import Conv2DFiLMNet
 
 from utils.img_utils import transform_imgs, load_pretrained_dino, get_dino_features_from_transformed_imgs
 from utils.vlm_utils import get_text_embedding_options

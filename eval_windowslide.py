@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 """
-eval_pano.py - 全景图像滑窗评估脚本
+eval_windowslide.py - brute-force sliding-window panorama baseline.
 
-设计理念：
-1. 滑窗推理逻辑完全独立，不修改inference.py
-2. 通过外部调用inference.predict()实现解耦
-3. 支持高分辨率图像无损推理
+Role:
+1. Simplest panorama solution: resize image to a window grid, crop windows, run local inference, and average pasted maps.
+2. Does not use object detector boxes.
+3. Kept as a baseline for comparing detector-crop pano inference.
 """
 
 import os
