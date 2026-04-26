@@ -80,6 +80,7 @@ class GroundingDINODetector:
         self.cfg = cfg
         self.model_path = cfg['pano_detector_path']
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.batch_size = int(cfg.get("pano_detector_batch_size", 1))
         self.processor = AutoProcessor.from_pretrained(self.model_path)
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(self.model_path).to(self.device).eval()
 
@@ -87,31 +88,41 @@ class GroundingDINODetector:
         conf = self.cfg['pano_detector_conf']
         iou = self.cfg['pano_detector_iou']
         max_det = self.cfg['max_det']
-        inputs = self.processor(images=images_rgb, 
-                                text=text_labels, 
-                                return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-        
-        target_sizes = [img.size[::-1] for img in images_rgb]
-        results = self.processor.post_process_grounded_object_detection(
-            outputs, 
-            inputs.input_ids,
-            threshold=0.25,
-            text_threshold=0.25,
-            target_sizes=target_sizes
-        )
 
         batch_detections = []
-        for result in results:
-            image_detections = []
-            for box, score, label in zip(result['boxes'], result['scores'], result["text_labels"]):
-                image_detections.append({
-                    'bbox': [float(x) for x in box.tolist()],
-                    'classname': str(label),
-                    'confidence': float(score.item()),
-                })
-            batch_detections.append(image_detections)
+        for start in range(0, len(images_rgb), self.batch_size):
+            end = start + self.batch_size
+            image_batch = images_rgb[start:end]
+            text_batch = text_labels[start:end]
+
+            inputs = self.processor(
+                images=image_batch,
+                text=text_batch,
+                return_tensors="pt",
+            ).to(self.device)
+            with torch.inference_mode():
+                outputs = self.model(**inputs)
+
+            target_sizes = [img.size[::-1] for img in image_batch]
+            results = self.processor.post_process_grounded_object_detection(
+                outputs,
+                inputs.input_ids,
+                threshold=conf,
+                text_threshold=conf,
+                target_sizes=target_sizes,
+            )
+
+            for result in results:
+                image_detections = []
+                for box, score, label in zip(result['boxes'], result['scores'], result["text_labels"]):
+                    if len(image_detections) >= max_det:
+                        break
+                    image_detections.append({
+                        'bbox': [float(x) for x in box.tolist()],
+                        'classname': str(label),
+                        'confidence': float(score.item()),
+                    })
+                batch_detections.append(image_detections)
         return batch_detections
     
 
