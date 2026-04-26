@@ -1,10 +1,12 @@
 pano_detector: "grounding_dino-l"
-pano_detector_path: 'grounding_dino/grounding_dino_swint_ogc.pth'
+pano_detector_path: '/root/autodl-tmp/yolo/models/grounding-dino-base'
 local_inferer: "steervit-l"
-local_inferer_path: 'steervit/steervit_dinov2_large.pth'
+local_inferer_path: '/root/autodl-tmp/yolo/models/SteerViT/steervit_dinov2_base.pth'
 
-box_expand_ratio: 0.0
-heatmap_thresh: 0.2
+text_embedding_func: "embeddings_oai"
+pano_detector_batch_size: 10
+pano_detector_conf: 0.3
+pano_detector_iou: 0.7
 max_det: 20
 
 

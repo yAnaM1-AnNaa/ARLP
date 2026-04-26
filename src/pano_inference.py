@@ -146,36 +146,38 @@ class PanoAffordanceInference:
         # single_detection = [{"bbox": [...], "classname": "chair", "confidence": 0.52},
         #                     {"bbox": [...], "classname": "chair", "confidence": 0.52},...]
         crops = []
-        bboxes = [i['bbox'] for i in single_detection] # [[x1, y1, x2, y2], [x1, y1, x2, y2],...]
-        for xyxy in bboxes:
-            x1, y1, x2, y2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+        bboxes = []
+        height, width = image_rgb.shape[:2]
+        for det in single_detection:
+            xyxy = det['bbox']
+            x1 = max(0, min(width, int(np.floor(xyxy[0]))))
+            y1 = max(0, min(height, int(np.floor(xyxy[1]))))
+            x2 = max(0, min(width, int(np.ceil(xyxy[2]))))
+            y2 = max(0, min(height, int(np.ceil(xyxy[3]))))
+            if x2 <= x1 or y2 <= y1:
+                continue
             crop = image_rgb[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
             crops.append(crop)
+            bboxes.append([x1, y1, x2, y2])
         return crops, bboxes
     
     def predict_single_crop(self, crops: List, bboxes: List, aff_query: str, image_shape):
         # bboxes = [[x1, y1, x2, y2], [x1, y1, x2, y2],...]
         if crops == []:
             return None
-        heatmap_sum = np.zeros(image_shape[:2], dtype=np.float32)
-        heatmap_count = np.zeros(image_shape[:2], dtype=np.float32)
+        pano_heatmap = np.zeros(image_shape[:2], dtype=np.float32)
         for idx, crop in enumerate(crops):
             x1, y1, x2, y2 = bboxes[idx][:]
-            local_heatmap = self.local_inferer.predict(crop, aff_query, thresh=None) # same size as crop
+            local_heatmap = self.local_inferer.predict(crop, aff_query, thresh=0.1) # same size as crop
             if local_heatmap.shape != crop.shape[:2]:
                 local_heatmap = np.array(
                     Image.fromarray(local_heatmap.astype(np.float32), mode="F").resize(
                         (crop.shape[1], crop.shape[0]), Image.BILINEAR
                     )
                 )
-            heatmap_sum[y1:y2, x1:x2] += local_heatmap
-            heatmap_count[y1:y2, x1:x2] += 1.0
-        pano_heatmap = np.divide(
-            heatmap_sum,
-            np.maximum(heatmap_count, 1e-6),
-            out=np.zeros_like(heatmap_sum),
-            where=heatmap_count > 0,
-        )
+            pano_heatmap[y1:y2, x1:x2] += local_heatmap
         return pano_heatmap
 
     def run(self, image_paths: List, classes: List,

@@ -1,0 +1,41 @@
+pano_detector: "grounding_dino-l"
+pano_detector_path: '/root/autodl-tmp/yolo/models/grounding-dino-base'
+local_inferer: "latefilm"
+local_inferer_path: '/root/autodl-tmp/ARLP/logs/20260413/oai_vitl_cot/ckpts/best.pth'
+
+text_embedding_func: "embeddings_oai"
+dino_model_type: "dinov2_vitl14"
+dino_use_registers: False
+pano_detector_batch_size: 10
+pano_detector_conf: 0.3
+pano_detector_iou: 0.7
+max_det: 20
+
+model_structure:
+  in_channels: 1024
+  filters: [256, 64, 1]
+  kernel_sizes: [3, 3, 1]
+  strides: [1, 1, 1]
+  norm: null
+  activation: "lrelu"
+  lang_emb_dim: 1024
+  film_mode: "rand"
+
+optim:
+  lr: 0.002
+  weight_decay: 0.0
+  step_size: 10
+  gamma: 0.75
+
+trainer:
+  batch_size: 32
+  num_epochs: 50
+  save_every: 10
+  val_every: 10
+  random_pad: true
+  val_split: 0.1
+
+steervit:
+  # Use "sigmoid" for affordance-finetuned checkpoints trained with BCE/Dice.
+  # Use "softmax" for the released SteerViT heatmap head behavior.
+  output_activation: "softmax"

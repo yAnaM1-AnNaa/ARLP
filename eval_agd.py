@@ -25,9 +25,9 @@ from src.pano_inference import PanoAffordanceInference
 def eval():
     ##### Parse args #####
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default='configs/steervit_pano.yaml', help="Path to config YAML file")
+    parser.add_argument("--config", default='configs/film_pano.yaml', help="Path to config YAML file")
     parser.add_argument("--agd_root", default='dataset/dataset6/Seen/testset', help="Path to AGD20K root")
-    parser.add_argument("--viz_dir", default='/runs/steer_eazy_seen', help="Path to save visualization")
+    parser.add_argument("--viz_dir", default='runs/film_eazy_seen', help="Path to save visualization")
     
     args = parser.parse_args()
 
@@ -67,28 +67,6 @@ def eval():
         ("swing_open", "cabinet_door"): "Handle, knob, pull edge, or outer graspable region of the cabinet door used to swing it open. Focus on the hand-contact opening part, not the fixed cabinet body, shelves, or adjacent wall.",
         ("wash", "sink"): "Basin area of the sink where washing takes place. Focus on the inner bowl, drain area, and water-contact surface, not the faucet, countertop, cabinet, or surrounding wall.",
     }
-    object_aliases = {
-        "armset": ["armrest", "chair armrest", "sofa armrest"],
-        "backreat": ["backrest", "chair backrest", "seat backrest"],
-        "bathtub": ["bathtub", "tub", "bath tub"],
-        "bed": ["bed", "mattress"],
-        "cabinet_door": ["cabinet door", "cupboard door"],
-        "door": ["door", "door panel"],
-        "drawer": ["drawer", "cabinet drawer"],
-        "garbage": ["trash can", "garbage can", "bin", "waste bin"],
-        "lamp": ["lamp", "light", "lampshade"],
-        "microwave": ["microwave", "microwave oven"],
-        "mirror": ["mirror", "looking glass"],
-        "pillow": ["pillow", "cushion"],
-        "refrigerator": ["refrigerator", "fridge"],
-        "screen": ["screen", "display", "monitor"],
-        "sink": ["sink", "wash basin", "basin"],
-        "sofa_seat": ["sofa seat", "sofa", "couch", "seat cushion"],
-        "stairway": ["stairway", "stairs", "staircase", "steps"],
-        "table": ["table", "desk", "tabletop"],
-        "window": ["window", "glass window"],
-    }
-
     ##### Build eval set #####
     eval_set_info = []
     dataset_pairs = {
@@ -110,7 +88,7 @@ def eval():
             obj_dir = os.path.join(action_dir, obj_name)
             img_names = sorted(os.listdir(obj_dir))
             aff_query = disambiguation_set[(action_name, obj_name)]
-            classes = object_aliases.get(obj_name, [obj_name.replace("_", " ")])
+            classes = [obj_name.replace("_", " ")]
 
             eval_set_info.append({
                 "img_paths": [
@@ -138,7 +116,9 @@ def eval():
     
     total_count = 0
 
-    for data in tqdm(eval_set_info):
+    total_images = sum(len(d["img_paths"]) for d in eval_set_info)
+    pbar = tqdm(total=total_images)
+    for data in eval_set_info:
         pano_heatmaps, _ = pipeline.run(
             image_paths=data["img_paths"],
             classes=data["classes"],
@@ -147,6 +127,7 @@ def eval():
 
         for img_path, gt_path, viz_name, out in zip(data["img_paths"], data["gt_paths"], data["viz_names"], pano_heatmaps):
             total_count += 1
+            pbar.update(1)
             img = np.array(Image.open(img_path).convert("RGB"))
             gt_mask = plt.imread(gt_path)
 
@@ -155,7 +136,7 @@ def eval():
                 out = np.zeros(img.shape[:2], dtype=np.float32)
 
             # postprocess
-            out = np.clip(out, 1e-3, 1-(1e-3))
+            # out = np.clip(out, 1e-3, 1-(1e-3))
 
             # save visualization of output
             if args.viz_dir is not None:
@@ -175,6 +156,7 @@ def eval():
             SIMs.append(sim)
             NSSs_01.append(nss_01)
             NSSs_05.append(nss_05)
+    pbar.close()
 
     ##### Print results #####
     print(f"KL: {np.mean(KLs)}, SIM: {np.mean(SIMs)}, NSS: {np.mean(NSSs_01)}, NSS_05: {np.mean(NSSs_05)}")
