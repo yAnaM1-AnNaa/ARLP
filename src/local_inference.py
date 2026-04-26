@@ -4,7 +4,7 @@ from PIL import Image
 import torch
 import torchvision.transforms as T
 
-from model.film_model import Conv2DFiLMNet
+from model.LateFiLM_model import Conv2DFiLMNet
 from utils.img_utils import transform_imgs, load_pretrained_dino, get_dino_features_from_transformed_imgs
 from utils.file_utils import load_config
 
@@ -44,14 +44,11 @@ class LateFiLMAffordanceInference:
     @staticmethod
     def _resize_pred_to_image(pred_map: np.array, out_hw):
         """Resize a model heatmap from model/patch resolution back to image size.
-
         Args:
-            pred_map: 2D numpy array, usually a patch-level heatmap from the
-                local model after activation.
-            out_hw: Target image size as (height, width).
-
+        pred_map: 2D numpy array, usually a patch-level heatmap from thelocal model after activation.
+        out_hw: Target image size as (height, width).
         Returns:
-            2D numpy array with shape (height, width).
+        2D numpy array with shape (height, width).
         """
         out_h, out_w = out_hw
         return np.array(
@@ -63,19 +60,10 @@ class LateFiLMAffordanceInference:
     @torch.no_grad()
     def predict(self, img_np, text, thresh=0.5):
         """Predict an affordance heatmap for one image-text pair.
-
         Args:
             img_np: RGB image as a numpy array with shape (H, W, 3).
             text: Affordance description used to compute the language embedding.
-            thresh: Optional threshold applied after sigmoid. If None, returns
-                a continuous score map in [0, 1].
-
-        Internal tensor meaning:
-            DINO produces patch features with shape (1, H', W', C), then the
-            Late FiLM head outputs patch-level logits with shape (H', W').
-            These logits are sigmoid scores, where each patch is an independent
-            affordance probability-like score.
-
+            thresh: Optional threshold applied after sigmoid. If None, returnsa continuous score map in [0, 1].
         Returns:
             2D numpy array with shape (H, W), resized back to the input image
             size. Values are continuous scores if thresh is None, otherwise
@@ -102,18 +90,11 @@ class LateFiLMAffordanceInference:
     @torch.no_grad()
     def predict_batch(self, img_np_list, text, thresh=None):
         """Predict affordance heatmaps for a list of images with one text prompt.
-
         Args:
             img_np_list: List of RGB numpy arrays, each with shape (H, W, 3).
             text: One affordance description shared by all images in the batch.
             thresh: Optional threshold applied after sigmoid. If None, returns
                 continuous score maps in [0, 1].
-
-        Internal tensor meaning:
-            Images with the same transformed size are batched together. The
-            Late FiLM head outputs patch-level logits with shape (B, H', W'),
-            then sigmoid converts them to independent patch scores.
-
         Returns:
             List of 2D numpy arrays. outputs[i] has shape equal to the original
             height and width of img_np_list[i].
@@ -160,24 +141,22 @@ class LateFiLMAffordanceInference:
                 outputs[global_idx] = pred_resized
         return outputs
     
-    
 
 
 class SteerViTAffordanceInference:
-    '''Backend using SteerViT. The model fuses text features into patch embed tokens within the ViT backbone, 
-    which is earlier than LateFiLM.'''
-    def __init__(self, config_path, checkpoint_path, text_embedding_func=None):
+    '''Backend using SteerViT. The model fuses text features into patch embed tokens 
+    within the ViT backbone, which is earlier than LateFiLM.'''
+    def __init__(self, cfg):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        cfg = load_config(config_path)
-        steer_cfg = cfg.get("steervit", {})
-        steer_checkpoint = steer_cfg.get("checkpoint", checkpoint_path)
+        steer_checkpoint = cfg['local_inferer_path']
+        output_activation = cfg.get("steervit", {}).get("output_activation", "sigmoid")
 
         from model.steer_model import SteerViT
 
         self.model = SteerViT.from_pretrained(steer_checkpoint, device=self.device)
         self.model.eval()
         self.transform = self.model.get_transforms()
-        self.output_activation = steer_cfg.get("output_activation", "sigmoid").lower()
+        self.output_activation = output_activation.lower()
 
     def clear_text_embedding_cache(self):
         pass
@@ -185,14 +164,10 @@ class SteerViTAffordanceInference:
     @staticmethod
     def _resize_pred_to_image(pred_map: np.array, out_hw):
         """Resize a SteerViT heatmap from model resolution back to image size.
-
-        Args:
-            pred_map: 2D numpy array with shape equal to the SteerViT input
-                resolution after patch logits have been upsampled.
-            out_hw: Target image size as (height, width).
-
-        Returns:
-            2D numpy array with shape (height, width).
+        pred_map: 2D numpy array, with shape equal to the SteerViT input 
+                  resolution after patch logits have been upsampled.
+        out_hw: Target image size as (height, width).
+        Returns: 2D numpy array with shape (height, width).
         """
         out_h, out_w = out_hw
         return np.array(
@@ -203,24 +178,11 @@ class SteerViTAffordanceInference:
 
     def _heatmaps_from_batch(self, images: torch.Tensor, text: str):
         """Run SteerViT on a batch and return model-resolution heatmaps.
-
-        Args:
-            images: Preprocessed image tensor with shape (B, 3, S, S), where S
+        images: Preprocessed image tensor with shape (B, 3, S, S), where S
                 is the SteerViT image size.
-            text: One affordance description shared by all images.
-
-        Tensor meaning:
-            If output_activation == "softmax", SteerViT get_heatmaps() applies
-            softmax over all image patches, so values describe a normalized
-            spatial distribution for each image.
-
-            Otherwise, the segmentation head produces patch-level logits with
-            shape (B, H', W'). Sigmoid is applied per patch, so values are
-            independent probability-like affordance scores.
-
-        Returns:
-            Torch tensor with shape (B, S, S), already upsampled from patch
-            resolution to the SteerViT model input resolution.
+        text: One affordance description shared by all images.
+        Returns: Torch tensor with shape (B, S, S), already upsampled from patch
+                 resolution to the SteerViT model input resolution.
         """
         texts = [text] * images.size(0) # duplicate the text for each image in the batch
         if self.output_activation == "softmax":
@@ -244,18 +206,14 @@ class SteerViTAffordanceInference:
     @torch.no_grad()
     def predict(self, img_np, text, thresh=0.5):
         """Predict a SteerViT affordance heatmap for one image-text pair.
-
-        Args:
-            img_np: RGB image as a numpy array with shape (H, W, 3).
-            text: Affordance description passed into SteerViT's text encoder.
-            thresh: Optional threshold applied after heatmap generation. If
+        img_np: RGB image as a numpy array with shape (H, W, 3).
+        text: Affordance description passed into SteerViT's text encoder.
+        thresh: Optional threshold applied after heatmap generation. If
                 None, returns the continuous heatmap.
-
-        Returns:
-            2D numpy array with shape (H, W), resized back to the input image
-            size. The value meaning depends on output_activation: softmax gives
-            a normalized spatial distribution; sigmoid gives independent
-            probability-like patch scores.
+        Returns: 2D numpy array with shape (H, W), resized back to the input image
+                size. The value meaning depends on output_activation: softmax gives
+                a normalized spatial distribution; sigmoid gives independent
+                probability-like patch scores.
         """
         image = Image.fromarray(img_np).convert("RGB")
         proc = self.transform(image).unsqueeze(0).to(self.device)
@@ -269,17 +227,13 @@ class SteerViTAffordanceInference:
     @torch.no_grad()
     def predict_batch(self, img_np_list, text, thresh=None):
         """Predict SteerViT affordance heatmaps for a list of images.
-
-        Args:
-            img_np_list: List of RGB numpy arrays, each with shape (H, W, 3).
-            text: One affordance description shared by all images in the batch.
-            thresh: Optional threshold applied after heatmap generation. If
+        img_np_list: List of RGB numpy arrays, each with shape (H, W, 3).
+        text: One affordance description shared by all images in the batch.
+        thresh: Optional threshold applied after heatmap generation. If
                 None, returns continuous heatmaps.
-
-        Returns:
-            List of 2D numpy arrays. outputs[i] has shape equal to the original
-            height and width of img_np_list[i]. The value meaning follows
-            output_activation: softmax distribution or sigmoid patch scores.
+        Returns: List of 2D numpy arrays. outputs[i] has shape equal to the original
+                height and width of img_np_list[i]. The value meaning follows
+                output_activation: softmax distribution or sigmoid patch scores.
         """
         if not img_np_list:
             return []
@@ -299,3 +253,6 @@ class SteerViTAffordanceInference:
         for pred_map, orig_hw in zip(sim_np, orig_sizes):
             outputs.append(self._resize_pred_to_image(pred_map, orig_hw))
         return outputs
+
+class EarlyFiLMAffordanceInference:
+    '''Sim to SteerViT, using FiLM to fuse dino tokens instead of cross attention.'''

@@ -12,11 +12,10 @@ from PIL import Image, ImageDraw
 import torch
 
 
-from model import build_open_vocab_detector
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection 
 from utils.file_utils import load_config, store_logs
 from utils.vlm_utils import get_text_embedding_options
-from local_inference import LateFiLMAffordanceInference, SteerViTAffordanceInference, EarlyFiLMAffordanceInference
+from src.local_inference import LateFiLMAffordanceInference, SteerViTAffordanceInference
 
 
 class YOLOWorldDetector:
@@ -135,11 +134,11 @@ class PanoAffordanceInference:
         elif 'steer' in local_inferer_type.lower():
             self.local_inferer = SteerViTAffordanceInference(cfg)
         elif 'earlyfilm' in local_inferer_type.lower():
-            self.local_inferer = EarlyFiLMAffordanceInference(cfg)
+            raise ValueError(f"Unsupported local_inferer type: {local_inferer_type}")
         else:
             raise ValueError(f"Unsupported local_inferer type: {local_inferer_type}")
 
-    def crop_single_detection(self, single_detection: List, image_rgb: Image):
+    def crop_single_detection(self, single_detection: List, image_rgb):
         '''crop simge detection into smaller patches according to bboxes'''
         # single_detection = [{"bbox": [...], "classname": "chair", "confidence": 0.52},
         #                     {"bbox": [...], "classname": "chair", "confidence": 0.52},...]
@@ -151,21 +150,29 @@ class PanoAffordanceInference:
             crops.append(crop)
         return crops, bboxes
     
-    def predict_single_crop(self, crops: List, bboxes: List, aff_query: str):
+    def predict_single_crop(self, crops: List, bboxes: List, aff_query: str, image_shape):
         # bboxes = [[x1, y1, x2, y2], [x1, y1, x2, y2],...]
         if crops == []:
             return None
-        pano_heatmap = np.zeros(crop.shape[:2], dtype=np.uint8)
+        heatmap_sum = np.zeros(image_shape[:2], dtype=np.float32)
+        heatmap_count = np.zeros(image_shape[:2], dtype=np.float32)
         for idx, crop in enumerate(crops):
             x1, y1, x2, y2 = bboxes[idx][:]
-            local_heatmap = self.local_inferer.predict(crop, aff_query, thresh=0.1) # same size as crop
+            local_heatmap = self.local_inferer.predict(crop, aff_query, thresh=None) # same size as crop
             if local_heatmap.shape != crop.shape[:2]:
                 local_heatmap = np.array(
                     Image.fromarray(local_heatmap.astype(np.float32), mode="F").resize(
                         (crop.shape[1], crop.shape[0]), Image.BILINEAR
                     )
                 )
-            pano_heatmap[y1:y2, x1:x2] += local_heatmap
+            heatmap_sum[y1:y2, x1:x2] += local_heatmap
+            heatmap_count[y1:y2, x1:x2] += 1.0
+        pano_heatmap = np.divide(
+            heatmap_sum,
+            np.maximum(heatmap_count, 1e-6),
+            out=np.zeros_like(heatmap_sum),
+            where=heatmap_count > 0,
+        )
         return pano_heatmap
 
     def run(self, image_paths: List, classes: List,
@@ -179,17 +186,18 @@ class PanoAffordanceInference:
         ##### Start pano detector #####
         detector_start_time = time.perf_counter()
         images_rgb: List = [Image.open(image_path).convert("RGB") for image_path in image_paths]
+        images_np = [np.array(image_rgb) for image_rgb in images_rgb]
         text_labels = [classes for _ in image_paths]
-        pano_detections = self.pano_detector.detect(image_paths=image_paths, 
+        pano_detections = self.pano_detector.detect(images_rgb=images_rgb, 
                                                     text_labels=text_labels)
         
         ##### Start local inference on each detection #####
         affordance_start_time = time.perf_counter()
         pano_heatmaps = []
         for i in range(len(image_paths)):
-            crops, bboxes = self.crop_detections(single_detection=pano_detections[i],
-                                         image_rgb=images_rgb[i])
-            pano_heatmap = self.predict_single_crop(crops=crops, bboxes=bboxes, aff_query=aff_query)
+            crops, bboxes = self.crop_single_detection(single_detection=pano_detections[i],
+                                                       image_rgb=images_np[i])
+            pano_heatmap = self.predict_single_crop(crops=crops, bboxes=bboxes, aff_query=aff_query, image_shape=images_np[i].shape)
             pano_heatmaps.append(pano_heatmap)
         end_time = time.perf_counter()
         
@@ -199,5 +207,3 @@ class PanoAffordanceInference:
             "num_detections": len(pano_heatmaps),
         }
         return pano_heatmaps, timing
-
-

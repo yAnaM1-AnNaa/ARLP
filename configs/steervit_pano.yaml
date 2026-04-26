@@ -9,7 +9,6 @@ max_det: 20
 
 
 steervit:
-  checkpoint: "steervit_dinov2_base.pth"
   # Use "sigmoid" for affordance-finetuned checkpoints trained with BCE/Dice.
   # Use "softmax" for the released SteerViT heatmap head behavior.
   output_activation: "softmax"
