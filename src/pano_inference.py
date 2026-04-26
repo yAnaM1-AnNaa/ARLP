@@ -15,7 +15,7 @@ import torch
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection 
 from utils.file_utils import load_config, store_logs
 from utils.vlm_utils import get_text_embedding_options
-from src.local_inference import LateFiLMAffordanceInference, SteerViTAffordanceInference
+from src.local_inference import build_local_inferer
 
 
 class YOLOWorldDetector:
@@ -121,7 +121,6 @@ class PanoAffordanceInference:
     then use a local inferer to process the content inside the box'''
     def __init__(self, cfg):
         pano_detector_type = cfg['pano_detector']
-        local_inferer_type = cfg['local_inferer']
         if 'grounding_dino' in pano_detector_type.lower():
             self.pano_detector = GroundingDINODetector(cfg)
         elif 'yolo_world' in pano_detector_type.lower():
@@ -129,14 +128,7 @@ class PanoAffordanceInference:
         else:
             raise ValueError(f"Unsupported pano_detector type: {pano_detector_type}")
         
-        if 'latefilm' in local_inferer_type.lower():
-            self.local_inferer = LateFiLMAffordanceInference(cfg)
-        elif 'steer' in local_inferer_type.lower():
-            self.local_inferer = SteerViTAffordanceInference(cfg)
-        elif 'earlyfilm' in local_inferer_type.lower():
-            raise ValueError(f"Unsupported local_inferer type: {local_inferer_type}")
-        else:
-            raise ValueError(f"Unsupported local_inferer type: {local_inferer_type}")
+        self.local_inferer = build_local_inferer(cfg)
 
     def crop_single_detection(self, single_detection: List, image_rgb):
         '''crop simge detection into smaller patches according to bboxes'''

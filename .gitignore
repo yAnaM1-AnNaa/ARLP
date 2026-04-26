@@ -12,4 +12,7 @@ panobasic
 panoContext_code
 docs/
 */*.db
+*/*.pyc
+*/*.pt
+*/*.pth
 ckpt/*

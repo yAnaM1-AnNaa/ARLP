@@ -20,7 +20,7 @@ import torch
 import torch.nn.functional as F
 
 from utils.file_utils import load_config
-from inference import AffordanceInference
+from src.local_inference import build_local_inferer
 from utils.vlm_utils import get_text_embedding_options
 from PIL import Image
 
@@ -89,7 +89,6 @@ def resize_to_multiple_of_14(img, max_size=672):
 def eval():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default='configs/oai_vitl_cot.yaml', help="Path to config YAML file")
-    parser.add_argument("--checkpoint", default='logs/20260413/oai_vitl_cot/ckpts/best.pth', help="Path to model checkpoint")
     parser.add_argument("--agd_root", default='dataset/agd20k/AGD20K/Seen/testset', help="Path to AGD20K root")
     parser.add_argument("--viz_dir", default='runs/eval_agd_seen_test', help="Path to save visualization")
     
@@ -100,10 +99,10 @@ def eval():
     cfg = load_config(args.config)
 
     # build inference
-    text_embedding_option = "embeddings_oai"
+    text_embedding_option = cfg["text_embedding_func"]
     print(f"Using text embedding option: {text_embedding_option}")
-    text_embedding_func = get_text_embedding_options(text_embedding_option)
-    inference = AffordanceInference(args.config, args.checkpoint, text_embedding_func)
+    cfg["text_embedding_func"] = get_text_embedding_options(text_embedding_option)
+    inference = build_local_inferer(cfg)
 
     ### Load eval data
     if args.viz_dir is not None:

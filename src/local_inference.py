@@ -9,6 +9,16 @@ from utils.img_utils import transform_imgs, load_pretrained_dino, get_dino_featu
 from utils.file_utils import load_config
 
 
+def build_local_inferer(cfg):
+    local_inferer_type = cfg['local_inferer']
+    if 'latefilm' in local_inferer_type.lower():
+        return LateFiLMAffordanceInference(cfg)
+    elif 'steer' in local_inferer_type.lower():
+        return SteerViTAffordanceInference(cfg)
+    else:
+        raise ValueError(f"Unsupported local_inferer type: {local_inferer_type}")
+
+
 class LateFiLMAffordanceInference:
     def __init__(self, cfg):
         ''' Late FiLM model uses original features from DINOv2, with 3 FiLM layers, which is later than SteerViT.

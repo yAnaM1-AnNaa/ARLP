@@ -20,7 +20,7 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 from utils.file_utils import load_config
-from inference import AffordanceInference
+from src.local_inference import build_local_inferer
 from utils.vlm_utils import get_text_embedding_options
 from utils.eval_utils import cal_kl, cal_sim, cal_nss  # , cal_iou
 from utils.img_utils import grid_visualize
@@ -203,7 +203,6 @@ def eval():
     """
     parser = argparse.ArgumentParser(description="PanoGibson滑窗评估脚本")
     parser.add_argument("--config", required=True, help="配置文件路径")
-    parser.add_argument("--checkpoint", required=True, help="模型权重路径")
     parser.add_argument("--agd_root", required=True, help="数据集根目录")
     parser.add_argument("--viz_dir", default=None, help="可视化结果保存路径")
     parser.add_argument("--window_size", type=int, default=518, 
@@ -217,10 +216,10 @@ def eval():
     cfg = load_config(args.config)
     
     # 初始化推理模型
-    text_embedding_option = "embeddings_oai"
+    text_embedding_option = cfg["text_embedding_func"]
     print(f"[INFO] 使用文本编码: {text_embedding_option}")
-    text_embedding_func = get_text_embedding_options(text_embedding_option)
-    inference = AffordanceInference(args.config, args.checkpoint, text_embedding_func)
+    cfg["text_embedding_func"] = get_text_embedding_options(text_embedding_option)
+    inference = build_local_inferer(cfg)
     
     # 创建可视化目录
     if args.viz_dir:
