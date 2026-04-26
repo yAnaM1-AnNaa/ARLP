@@ -18,16 +18,16 @@ from utils.vlm_utils import get_text_embedding_options
 
 import argparse
 from tqdm import tqdm
-from eval_windowslide import overlay_heatmap
+from utils.img_utils import overlay_heatmap
 from src.pano_inference import PanoAffordanceInference
 
 
 def eval():
     ##### Parse args #####
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default='configs/oai_vitl_cot.yaml', help="Path to config YAML file")
-    parser.add_argument("--agd_root", default='dataset/dataset6/Unseen/testset', help="Path to AGD20K root")
-    parser.add_argument("--viz_dir", required=False, default=None, help="Path to save visualization")
+    parser.add_argument("--config", default='configs/steervit_pano.yaml', help="Path to config YAML file")
+    parser.add_argument("--agd_root", default='dataset/dataset6/Seen/testset', help="Path to AGD20K root")
+    parser.add_argument("--viz_dir", default='/runs/steer_eazy_seen', help="Path to save visualization")
     
     args = parser.parse_args()
 
@@ -63,7 +63,7 @@ def eval():
         ("reflect_image", "mirror"): "Reflective front surface of the mirror where images appear. Focus on the smooth reflective glass area, not the frame, wall, stand, or nearby objects.",
         ("refrigerate", "refrigerator"): "Interior storage area of the refrigerator where items are kept cold. Focus on the shelves, bins, and inner compartment surfaces that hold food, not the exterior door, handle, or control panel.",
         ("rest_arm", "armset"): "Upper support surface of the armrest where a person's arm rests. Focus on the elongated top contact area beside the seat, not the seat cushion, backrest, legs, or side frame.",
-        ("sit", "sofa_seat"): "Top sitting surface of the seat where a person places their body weight. Focus on the horizontal cushion or sitting platform, not the backrest, legs, armrests, or surrounding floor.",
+        ("sit", "seat"): "Top sitting surface of the seat where a person places their body weight. Focus on the horizontal cushion or sitting platform, not the backrest, legs, armrests, or surrounding floor.",
         ("swing_open", "cabinet_door"): "Handle, knob, pull edge, or outer graspable region of the cabinet door used to swing it open. Focus on the hand-contact opening part, not the fixed cabinet body, shelves, or adjacent wall.",
         ("wash", "sink"): "Basin area of the sink where washing takes place. Focus on the inner bowl, drain area, and water-contact surface, not the faucet, countertop, cabinet, or surrounding wall.",
     }

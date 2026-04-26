@@ -348,3 +348,34 @@ def visualize_palette():
 
     plt.savefig("/root/autodl-tmp/public/public-e/unsup-affordance/runs/color_palette.png", bbox_inches='tight')
     plt.close()
+
+def overlay_heatmap(img, heatmap, alpha=0.5, colormap=plt.cm.jet):
+    """
+    将热力图叠加到原图上
+    
+    Args:
+        img: 原图 (H, W, 3), uint8 或 float [0,1]
+        heatmap: 热力图 (H, W), float [0,1]
+        alpha: 热力图透明度
+        colormap: matplotlib colormap
+        
+    Returns:
+        overlay: 叠加后的图像 (H, W, 3), float [0,1]
+    """
+    # 确保img是float [0,1]
+    if img.dtype == np.uint8:
+        img = img.astype(np.float32) / 255.0
+    
+    # 确保heatmap尺寸与img一致
+    if heatmap.shape[:2] != img.shape[:2]:
+        heatmap = np.array(Image.fromarray(heatmap).resize(
+            (img.shape[1], img.shape[0]), Image.BILINEAR))
+    
+    # 将heatmap转换为彩色 (H, W, 4) -> (H, W, 3)
+    heatmap_colored = colormap(heatmap)[:, :, :3]
+    
+    # 叠加
+    overlay = (1 - alpha) * img + alpha * heatmap_colored
+    overlay = np.clip(overlay, 0, 1)
+    
+    return overlay

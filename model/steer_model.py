@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
 from timm.data import resolve_data_config, create_transform
 
-from steer_backbone import ViTBackbone
+from model.steer_backbone import ViTBackbone
 from utils.steer_utils import TCAttentionExtract
 
 class SteerViT(nn.Module):

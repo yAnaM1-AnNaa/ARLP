@@ -1,8 +1,8 @@
 import torch
-from torch.nn import nn
+import torch.nn as nn
 import timm
 import types
-from .steer_crossattention import GatedCrossAttention, attn_forward_wrapper
+from model.steer_crossattention import GatedCrossAttention, attn_forward_wrapper
 
 
 def block_forward(self, x):
