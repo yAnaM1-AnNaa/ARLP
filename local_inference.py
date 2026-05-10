@@ -2,6 +2,7 @@ import argparse
 import os
 from collections import defaultdict
 from time import perf_counter
+from typing import Optional, Sequence
 import numpy as np
 from PIL import Image
 import torch
@@ -14,12 +15,39 @@ from utils.img_utils import transform_imgs, load_pretrained_dino, get_dino_featu
 from utils.vlm_utils import get_text_embedding_options
 from utils.file_utils import load_config, save_image
 
+
+########################################
+##### LateFiLM local inference
+########################################
+
 class AffordanceInference:
-    def __init__(self, config_path, checkpoint_path, text_embedding_func):
+    def __init__(self, config_path, checkpoint_path=None, text_embedding_func=None):
         # This will load 3 models: the affordance model; DINO; text embedding model.
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         cfg = load_config(config_path)
-        model_cfg = cfg['model']
+        if 'local_inferer' in cfg:
+            local_cfg = cfg['local_inferer']
+            if local_cfg.get('name', '').lower() != 'latefilm':
+                raise ValueError(
+                    "This AffordanceInference implementation currently supports "
+                    "local_inferer.name='latefilm'."
+                )
+            model_cfg = local_cfg['model']
+            checkpoint_path = checkpoint_path or local_cfg['checkpoint_path']
+            dino_cfg = local_cfg.get('dino', {})
+            torch_home = dino_cfg.get('torch_home', None)
+            dino_model_type = dino_cfg.get('model_type')
+            dino_use_registers = dino_cfg.get('use_registers', True)
+        else:
+            model_cfg = cfg['model']
+            torch_home = cfg.get('torch_home', None)
+            dino_model_type = cfg.get('dino_model_type')
+            dino_use_registers = cfg.get("dino_use_registers", True)
+
+        if checkpoint_path is None:
+            raise ValueError("checkpoint_path must be provided for local inference.")
+        if text_embedding_func is None:
+            text_embedding_func = get_text_embedding_options("embeddings_oai")
 
         self.model = Conv2DFiLMNet(**model_cfg)
         self.model.build()
@@ -29,9 +57,6 @@ class AffordanceInference:
         self.model.load_state_dict(ckpt['model'])
         self.model.eval()
 
-        torch_home = cfg.get('torch_home', None)
-        dino_model_type = cfg.get('dino_model_type')
-        dino_use_registers = cfg.get("dino_use_registers", True)
         self.dino = load_pretrained_dino(dino_model_type, use_registers=dino_use_registers, torch_path=torch_home).to(self.device).eval()
 
         self.text_embedding_func = text_embedding_func
@@ -122,6 +147,141 @@ class AffordanceInference:
                 outputs[global_idx] = pred_resized
         return outputs
 
+
+########################################
+##### Detection-based local inference
+########################################
+
+class DetectionLocalInference:
+    def __init__(
+        self,
+        affordance_inference: AffordanceInference,
+        box_expand_ratio: float = 0.0,
+        local_heatmap_thresh: Optional[float] = None,
+        final_heatmap_thresh: Optional[float] = None,
+        overlap_mode: str = "mean",
+    ):
+        self.affordance_inference = affordance_inference
+        self.box_expand_ratio = box_expand_ratio
+        self.local_heatmap_thresh = local_heatmap_thresh
+        self.final_heatmap_thresh = final_heatmap_thresh
+        self.overlap_mode = overlap_mode
+
+    @staticmethod
+    def expand_and_clip_box(xyxy: Sequence[int], width: int, height: int, expand_ratio: float):
+        x1, y1, x2, y2 = xyxy
+        box_w = x2 - x1
+        box_h = y2 - y1
+
+        pad_w = box_w * expand_ratio / 2.0
+        pad_h = box_h * expand_ratio / 2.0
+
+        x1 = max(0, int(np.floor(x1 - pad_w)))
+        y1 = max(0, int(np.floor(y1 - pad_h)))
+        x2 = min(width, int(np.ceil(x2 + pad_w)))
+        y2 = min(height, int(np.ceil(y2 + pad_h)))
+        return x1, y1, x2, y2
+
+    def predict(self, image_rgb: np.ndarray, detections: Sequence, affordance_text: str) -> np.ndarray:
+        height, width = image_rgb.shape[:2]
+        heatmap_sum = np.zeros((height, width), dtype=np.float32)
+        heatmap_count = np.zeros((height, width), dtype=np.float32)
+        heatmap_max = np.zeros((height, width), dtype=np.float32)
+        crop_records = []
+        crop_images = []
+
+        for det in detections:
+            x1, y1, x2, y2 = self.expand_and_clip_box(
+                det.box_xyxy,
+                width,
+                height,
+                self.box_expand_ratio,
+            )
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            crop = image_rgb[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+
+            crop_records.append((x1, y1, x2, y2, crop.shape[:2]))
+            crop_images.append(crop)
+
+        if crop_images:
+            local_heatmaps = self.affordance_inference.predict_batch(
+                crop_images,
+                affordance_text,
+                thresh=self.local_heatmap_thresh,
+            )
+        else:
+            local_heatmaps = []
+
+        for local_heatmap, (x1, y1, x2, y2, crop_hw) in zip(local_heatmaps, crop_records):
+            crop_h, crop_w = crop_hw
+            if local_heatmap.shape != (crop_h, crop_w):
+                local_heatmap = np.array(
+                    Image.fromarray(local_heatmap.astype(np.float32), mode="F").resize(
+                        (crop_w, crop_h),
+                        Image.BILINEAR,
+                    )
+                )
+
+            if self.overlap_mode == "max":
+                heatmap_max[y1:y2, x1:x2] = np.maximum(
+                    heatmap_max[y1:y2, x1:x2],
+                    local_heatmap,
+                )
+            else:
+                heatmap_sum[y1:y2, x1:x2] += local_heatmap
+            heatmap_count[y1:y2, x1:x2] += 1.0
+
+        if self.overlap_mode == "mean":
+            heatmap = np.divide(
+                heatmap_sum,
+                np.maximum(heatmap_count, 1e-6),
+                out=np.zeros_like(heatmap_sum),
+                where=heatmap_count > 0,
+            )
+        elif self.overlap_mode == "sum":
+            heatmap = heatmap_sum
+        elif self.overlap_mode == "max":
+            heatmap = heatmap_max
+        else:
+            raise ValueError(f"Unsupported overlap_mode: {self.overlap_mode}")
+
+        if self.final_heatmap_thresh is not None:
+            heatmap = (heatmap > self.final_heatmap_thresh).astype(np.float32)
+        return heatmap
+
+
+########################################
+##### Local inference builder
+########################################
+
+def build_detection_local_inference(config_path: str) -> DetectionLocalInference:
+    cfg = load_config(config_path)
+    local_cfg = cfg.get("local_inferer", {})
+    text_embedding_option = local_cfg.get("text_embedding", {}).get(
+        "name",
+        cfg.get("text_embedding", "embeddings_oai"),
+    )
+    text_embedding_func = get_text_embedding_options(text_embedding_option)
+    checkpoint_path = local_cfg.get("checkpoint_path")
+    affordance_inference = AffordanceInference(config_path, checkpoint_path, text_embedding_func)
+
+    fusion_cfg = cfg.get("pano_fusion", {})
+    return DetectionLocalInference(
+        affordance_inference=affordance_inference,
+        box_expand_ratio=fusion_cfg.get("box_expand_ratio", 0.0),
+        local_heatmap_thresh=fusion_cfg.get("local_heatmap_thresh", None),
+        final_heatmap_thresh=fusion_cfg.get("final_heatmap_thresh", None),
+        overlap_mode=fusion_cfg.get("overlap_mode", "mean"),
+    )
+
+
+########################################
+##### CLI runner
+########################################
 
 def main(args):
     cfg = load_config(args.config)

@@ -1,18 +1,56 @@
-dataset_bg_dir: None
+global_detector:
+  name: "grounding_dino"  # grounding_dino | yolo_world
+  model_path: "/root/autodl-tmp/yolo/models/grounding-dino-base"
 
-model:
-  in_channels: 1024      # vitl14 features
-  filters: [256, 64, 1]
-  kernel_sizes: [3, 3, 1]
-  strides: [1, 1, 1]
-  norm: null
-  activation: lrelu
-  lang_emb_dim: 1024
-  film_mode: zero
-  film_place: after      
+  # Detector-specific parameters.
+  # GroundingDINO uses box_threshold/text_threshold for post-processing.
+  # YOLOWorld uses conf/iou/max_det. For compatibility, conf is also accepted.
+  params:
+    box_threshold: 0.2
+    text_threshold: 0.2
+    iou: 0.7
+    max_det: 20
 
-text_embedding: "embeddings_oai"
+local_inferer:
+  name: "latefilm"  # latefilm
+  checkpoint_path: "logs/20260413/oai_vitl_cot/ckpts/best.pth"
 
-dino_model_type: "dinov2_vitl14"
-dino_use_registers: false
-torch_home: None
+  # Required by latefilm.
+  # LateFiLM builds Conv2DFiLMNet from this block, so these keys must match
+  # Conv2DFiLMNet constructor arguments.
+  model:
+    in_channels: 1024      # ViT-L/14 features
+    filters: [256, 64, 1]
+    kernel_sizes: [3, 3, 1]
+    strides: [1, 1, 1]
+    norm: null
+    activation: "lrelu"
+    lang_emb_dim: 1024
+    film_mode: "zero"
+    film_place: "after"
+
+  dino:
+    model_type: "dinov2_vitl14"
+    use_registers: false
+    torch_home: null
+
+  text_embedding:
+    name: "embeddings_oai"
+
+pano_fusion:
+  # Expand each detected box before local inference.
+  box_expand_ratio: 0.0
+
+  # Threshold passed into local crop inference.
+  # Use null to keep continuous heatmaps. This is recommended for evaluation.
+  local_heatmap_thresh: null
+
+  # Optional threshold after crop heatmaps are pasted back into the full image.
+  final_heatmap_thresh: null
+
+  # How overlapping crop heatmaps are merged.
+  # mean is the recommended default because it avoids rewarding duplicated boxes.
+  overlap_mode: "mean"  # mean | sum | max
+
+eval:
+  prompt_config: "configs/agd_prompts.yaml"
