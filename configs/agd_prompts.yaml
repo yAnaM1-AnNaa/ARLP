@@ -38,6 +38,12 @@ heating:
       buttons, or exterior casing.
 
 lean_back:
+  backrest:
+    detector_classes: ["backrest", "chair backrest", "seat backrest"]
+    affordance_prompt: >
+      Front support surface of the backrest where a person's back leans. Focus on
+      the broad rear support pad or panel behind the seat, not the seat cushion,
+      legs, or outer frame.
   backreat:
     detector_classes: ["backrest", "chair backrest", "seat backrest"]
     affordance_prompt: >

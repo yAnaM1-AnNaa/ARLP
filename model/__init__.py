@@ -1,4 +1,5 @@
 from .network import Conv2DFiLMNet
+from .early_film import EarlyFiLMDINOv2, EarlyFiLMViTBackbone, ResidualGlobalFiLM
 from .open_vocab_detector import (
     DetectionResult,
     OpenVocabDetector,
@@ -9,6 +10,9 @@ from .open_vocab_detector import (
 
 __all__ = [
     "Conv2DFiLMNet",
+    "EarlyFiLMDINOv2",
+    "EarlyFiLMViTBackbone",
+    "ResidualGlobalFiLM",
     "DetectionResult",
     "OpenVocabDetector",
     "YOLOWorldDetector",
