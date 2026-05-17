@@ -22,7 +22,7 @@ from utils.img_utils import grid_visualize, load_pretrained_dino
 from utils.file_utils import store_or_update_dataset, save_image, save_response
 from utils.vlm_utils import get_text_embedding_options
 from utils.file_utils import load_config, store_logs, ResearchSql
-from scripts.proposal_to_sim_proj import proposal_to_heatmaps, _slugify
+from utils.sim_proj_utils import write_sim_proj_from_proposal_rgb
 from transformers import AutoProcessor, CLIPModel, AutoTokenizer, CLIPTextModelWithProjection
 
 
@@ -134,53 +134,18 @@ def build_sim_proj_json(
     min_pixels: int,
 ):
     """Generate proposal-mask sim_proj files and return the DB JSON payload."""
-    proposal_img_path = Path(proposal_img_path)
-    sim_proj_dir = Path(sim_proj_dir)
-    sim_proj_dir.mkdir(parents=True, exist_ok=True)
-
-    proposal_img = np.asarray(Image.open(proposal_img_path).convert("RGB"))
-    base_name = "_".join(
-        _slugify(part)
-        for part in (category_name, instance_key, str(frame_idx), "proposal")
-    )
-
-    sim_proj = {}
-    manifest = {
-        "proposal_img": str(proposal_img_path),
-        "category_name": category_name,
-        "instance_name": instance_key,
-        "frame_idx": str(frame_idx),
-        "shape": list(proposal_img.shape[:2]),
-        "tolerance": tolerance,
-        "min_pixels": min_pixels,
-        "colors": [],
-    }
-
-    for response_color, palette_name, heatmap, pixel_count in proposal_to_heatmaps(
-        proposal_img,
+    sim_proj, _ = write_sim_proj_from_proposal_rgb(
+        proposal_img_path,
+        sim_proj_dir,
+        category_name=category_name,
+        instance_name=instance_key,
+        frame_idx=frame_idx,
+        proposal_name="proposal",
+        vlm_response=region_matching,
         tolerance=tolerance,
         min_pixels=min_pixels,
-        vlm_response=region_matching,
-    ):
-        color_slug = _slugify(response_color)
-        npy_path = sim_proj_dir / f"{base_name}_{color_slug}.npy"
-        np.save(npy_path, heatmap.astype(np.float32))
-        sim_proj[response_color] = str(npy_path.resolve())
-        manifest["colors"].append({
-            "color": response_color,
-            "palette_color": palette_name,
-            "heatmap_npy": str(npy_path.resolve()),
-            "pixel_count": pixel_count,
-            "vlm_response": region_matching.get(response_color),
-        })
-
-    if not sim_proj:
-        raise ValueError("No sim_proj files were generated from proposal image.")
-
-    manifest_path = sim_proj_dir / f"{base_name}_manifest.json"
-    with manifest_path.open("w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-
+        save_png=False,
+    )
     return sim_proj
 
 def proxy_off():

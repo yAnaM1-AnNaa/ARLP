@@ -1,97 +1,311 @@
-# Introduction
+# ARLP Run Guide
 
-模型的输入是全景RGB图片，输出是热力图（由原始RGB图和mask叠加得到）。基于两个项目：UAD（unsupported affordance detection）和GREAT。
+This README is only a runbook. It describes the files to prepare, the configs
+to edit, and the commands to run evaluation, split evaluation, local inference,
+EarlyFiLM training, and sim-proj generation.
 
-UAD基于Behavior 1k、Omnigibson等数据集进行训练，输入为2D RGB常规视角图片，输出为热力图。GREAT主要使用其中的思维链CoT部分，通过调用foundaion model和预设prompt（一般为4条，对应物体的几何结构和affordance），对输入的图片进行处理，得到四条详细的描述，用于优化数据集和推理效果。
+## 1. Environment
 
-Behavior 1k数据集初始为3d，通过设定12个不同的角度得到12张同一物体、不同角度的RGB图片。通过DINOv2对这些图片进行特征提取，得到具体的物体得到不同部位（例如，cup会分为把手、杯口和杯子本身）。将得到的图片以及各部位的特征投影回3D物体，在经过聚类计算，得到各部分分类的3d物体点云。调用foundation model，通过prompt得到物体各部分的affordance（例如cup handler-handle-green）。也就是说，给物体的每个部分分配一个颜色，并且该颜色对应一种affordance。随后，经过计算选出最能代表该物体的几张图片，进行训练。
+Use Python 3.10+ with CUDA PyTorch. From the repository root:
 
-本项目所作的一个改动就是将UAD的数据集进行修改，由原先的简略的affordance改为详细的、有明确目标指向的CoT结果。另一个改动是修改UAD的特征提取部分，使得模型能够适应全景环境，方式包括滑窗分割读取、多层特征融合等。
+```bash
+cd ARLP
+pip install -r requirements.txt
+```
 
----
+The project expects these Python packages at runtime:
 
-# dataset
-## pipeline_info.sql
-| category_name | instance_name | frame_idx | | clustered_img_path | status| vlm_response | error_msg
+```text
+torch, torchvision, timm, transformers, safetensors, h5py, pillow, numpy,
+matplotlib, opencv-python, openai, open3d, tqdm, pyyaml
+```
 
-训练所需的有以下四类:
-1. processed_img. 是rgb图像经过处理后的tensor.
-2. text/text embedding. text是VLM给出的针对每个部件的描述, 例如‘handle for gripping’, text embedding就是文本的嵌入向量, 可有openai text embedding model(online)或sentence transformer(local)两种模型选择
-3. sim_proj. 训练 target，也就是模型要学习预测的热力图, 来自 H5 的 similarity_projections。例如, vlm_response中有"red": ["handle for gripping"], dataset 会用color_label_names 找到 "red" 对应第几个 cluster，然后从：similarity_projections[color_idx, cam_idx]取出对应的热力图作为 sim_proj。
-4. mask. dataset 内部用于背景替换增强的 foreground mask，不直接作为模型输入或 loss target 返回。它由原始 RGB 中接近白色的背景区域计算出来
+If `requirements.txt` does not install CUDA PyTorch for your machine, install
+the correct PyTorch build first, then install the remaining requirements.
 
-输入:
-processed_img = 某个真实 RGB 视角
-text_emb = 某句 affordance 描述的 embedding
-监督:
-sim_proj = 这句 affordance 对应颜色区域的热力图
+## 2. Required Files
 
-# 项目文件结构
+Large model and dataset artifacts are not committed. Prepare them locally and
+point the YAML configs to their paths.
 
-以下为上游项目 unsup-affordance (UAD) 的核心文件清单，ARLP 基于其改进。
+Recommended layout:
 
-## 一、核心源代码文件
+```text
+ARLP/
+  grounding-dino-base/
+    config.json
+    preprocessor_config.json
+    model.safetensors or pytorch_model.bin
+    tokenizer files...
+  checkpoints/
+    eval_agd.pth
+    early_film/best (1).pth
+  steervit_dinov2_base.pth
+  dataset/pano_eazy/dataset6/Seen/testset/
+    egocentric/
+    GT/
+```
 
-### 主入口脚本
+SteerViT also needs a local DINOv2-B Hugging Face `model.safetensors`. Set this
+path in `configs/steervit_eval.yaml`:
 
-| 文件 | 功能 | ARLP 对应 |
-|------|------|-----------|
-| `src/inference.py` | 推理入口 (`AffordanceInference` 类) | `inference.py` |
-| `src/train.py` | 训练入口 (`Trainer` 类) | `train.py` / `src/train.py` |
-| `src/eval_agd.py` | AGD20K 数据集评估 | `eval_agd.py` |
-| `src/eval_pano.py` | 全景滑动窗口评估 | `eval_pano.py` |
-| `src/eval_pano_depth.py` | 带深度约束的全景评估 | 无 |
-| `src/eval_pano_multiscale.py` | 多尺度评估 | 无 |
+```yaml
+local_inferer:
+  model:
+    vision_checkpoint_path: "/path/to/facebook--dinov2-base/.../model.safetensors"
+```
 
-### 数据处理管线
+EarlyFiLM and SteerViT use `roberta-large`. Make sure it is available through
+Hugging Face cache or network access.
 
-| 文件 | 功能 | ARLP 对应 |
-|------|------|-----------|
-| `src/pipeline.py` | 数据策展管线 v1 | 无 |
-| `src/pipelinev2.py` | 数据策展管线 v2 | 无 |
-| `src/pipelinev3.py` | 数据策展管线 v3 | `pipelinev3.py` |
-| `src/fusion.py` | 3D 特征融合 (多视图 RGBD → 点云) | `src/fusion.py` |
-| `src/cluster.py` | K-means / PCA 聚类 | `src/cluster.py` |
-| `src/get_vlm_response.py` | GPT-4o VLM 接口 (生成 affordance 描述) | 无 (但被 import) |
-| `src/viz_cloud.py` | 点云可视化 | `viz_cloud.py` |
+## 3. Configs
 
-### 模型定义
+Evaluation uses one detector and one local inferer. The local inferer is selected
+by `local_inferer.name`.
 
-| 文件 | 功能 | ARLP 对应 |
-|------|------|-----------|
-| `src/model/network.py` | `Conv2DFiLMNet` 网络架构 (FiLM 条件化卷积) | `model/network.py` |
-| `src/model/dataset.py` | `RegionSimDataset` 数据集类 | `model/dataset.py` |
+Available local inferers:
 
-### 工具模块 (`src/utils/`)
+```yaml
+local_inferer:
+  name: "latefilm"    # Conv2DFiLMNet over frozen DINO features
+```
 
-| 文件 | 功能 | ARLP 对应 |
-|------|------|-----------|
-| `src/utils/__init__.py` | 包初始化 | 无 |
-| `src/utils/file_utils.py` | YAML 配置加载、H5 数据存储 | `utils/file_utils.py` |
-| `src/utils/img_utils.py` | 图像处理 + DINOv2 特征提取 | `utils/img_utils.py` |
-| `src/utils/vlm_utils.py` | OpenAI / SentenceTransformer 文本嵌入 | `utils/vlm_utils.py` |
-| `src/utils/eval_utils.py` | 评估指标 (KL, SIM, NSS) | `utils/eval_utils.py` |
-| `src/utils/pcd_utils.py` | 点云操作 | `utils/pcd_utils.py` |
-| `src/utils/postprocess_utils.py` | 深度过滤 + 形态学后处理 | `utils/postprocess_utils.py` |
+```yaml
+local_inferer:
+  name: "earlyfilm"   # Early FiLM inside DINOv2 ViT
+```
 
-## 二、配置文件 (`configs/`)
+```yaml
+local_inferer:
+  name: "steervit"    # Gated cross-attention inside DINOv2 ViT
+```
 
-| 文件 | 用途 | ARLP 对应 |
-|------|------|-----------|
-| `configs/st_emb.yaml` | SentenceTransformer 嵌入 + ViT-S 配置 | 无 |
-| `configs/oai_emb.yaml` | OpenAI 嵌入 + ViT-S 配置 | 无 |
-| `configs/st_emb_vitl.yaml` | SentenceTransformer + ViT-L 配置 | 无 |
-| `configs/oai_emb_vitl.yaml` | OpenAI 嵌入 + ViT-L 配置 | 无 |
-| `configs/eval_agd.yaml` | AGD20K 评估专用配置 | 无 |
+Useful configs:
 
-## 三、预训练模型 / 权重
+```text
+configs/eval_agd.yaml                    # default evaluation config
+configs/eval_agd.example.yaml            # schema examples for all inferers
+configs/early_film.yaml                  # EarlyFiLM eval config
+configs/early_film_layers_21_22_23.yaml  # EarlyFiLM train/eval config for last 3 ViT-L blocks
+configs/steervit_eval.yaml               # SteerViT eval config
+configs/agd_prompts.yaml                 # action/object prompts and detector classes
+```
 
-| 文件 | 说明 | ARLP 对应 |
-|------|------|-----------|
-| `checkpoints/st_emb.pth` | SentenceTransformer 方案训好的模型 | 无 |
-| `checkpoints/oai_emb.pth` | OpenAI 嵌入方案训好的模型 | 无 |
-| `checkpoints/eval_agd.pth` | AGD20K 评估模型 (ViT-L) | 无 |
-| `checkpoints/dinov2_vits14_pretrain.pth` | DINOv2 ViT-S/14 预训练权重 | 无 |
-| `all-MiniLM-L6-v2/` | SentenceTransformer 本地模型 (384维) | 无 (运行时下载) |
-| `models--facebook--dinov2-large/` | DINOv2-Large HuggingFace 缓存 | 无 (硬编码路径引用) |
-| `dinov2/` | DINOv2 完整源码包 (含 ViT 模型定义) | 无 |
+For EarlyFiLM, FiLM layers are controlled by:
+
+```yaml
+model:
+  film_layers: [21, 22, 23]
+```
+
+For SteerViT, cross-attention layers are controlled by:
+
+```yaml
+model:
+  cross_attn_layers: [1, 3, 5, 7, 9, 11]
+```
+
+## 4. Full Evaluation
+
+Run SteerViT on a pano-eazy test split:
+
+```bash
+python eval_agd.py \
+  --config configs/steervit_eval.yaml \
+  --agd_root dataset/pano_eazy/dataset6/Seen/testset \
+  --viz_dir runs/steervit_seen_test
+```
+
+Run EarlyFiLM:
+
+```bash
+python eval_agd.py \
+  --config configs/early_film.yaml \
+  --agd_root dataset/pano_eazy/dataset6/Seen/testset \
+  --viz_dir runs/earlyfilm_seen_test
+```
+
+Save predicted heatmaps as `.npy` files:
+
+```bash
+python eval_agd.py \
+  --config configs/steervit_eval.yaml \
+  --agd_root dataset/pano_eazy/dataset6/Seen/testset \
+  --viz_dir runs/steervit_seen_test \
+  --save_npy
+```
+
+Outputs:
+
+```text
+runs/<name>/*.png
+runs/<name>/*.npy                 # only with --save_npy
+runs/<name>/missing_files.txt     # if dataset image/GT files are missing
+```
+
+The script prints:
+
+```text
+KL, SIM, NSS, NSS_05
+Evaluated: <valid>/<candidate>
+No detections: <count>/<valid>
+```
+
+## 5. Seen/Unseen Action Splits
+
+`eval_agd.py` supports action filters:
+
+```text
+--include_actions ACTION...
+--exclude_actions ACTION...
+```
+
+Action names accept spaces, hyphens, or underscores. They are normalized to
+directory names such as `lean_back`, `rest_arm`, and `swing_open`.
+
+Example seen split:
+
+```bash
+python eval_agd.py \
+  --config configs/steervit_eval.yaml \
+  --agd_root dataset/pano_eazy/dataset6/Seen/testset \
+  --viz_dir runs/steervit_split_seen \
+  --include_actions heating lean_back open pull refrigerate rest_arm sit swing_open
+```
+
+Example unseen split using the complement:
+
+```bash
+python eval_agd.py \
+  --config configs/steervit_eval.yaml \
+  --agd_root dataset/pano_eazy/dataset6/Seen/testset \
+  --viz_dir runs/steervit_split_unseen \
+  --exclude_actions heating lean_back open pull refrigerate rest_arm sit swing_open
+```
+
+## 6. Local Image/Folder Inference
+
+Run a local affordance model over an image directory:
+
+```bash
+python local_inference.py \
+  --config configs/steervit_eval.yaml \
+  --checkpoint steervit_dinov2_base.pth \
+  --img-dir /path/to/images \
+  --text-query "people can sit on this part of chair and relax." \
+  --output-dir runs/local_steervit
+```
+
+For EarlyFiLM, use an EarlyFiLM config and checkpoint:
+
+```bash
+python local_inference.py \
+  --config configs/early_film.yaml \
+  --checkpoint "checkpoints/early_film/best (1).pth" \
+  --img-dir /path/to/images \
+  --text-query "people can sit on this part of chair and relax." \
+  --output-dir runs/local_earlyfilm
+```
+
+## 7. Train EarlyFiLM
+
+`train_earlyfilm.py` expects one or more serialized `RegionSimDataset` `.pt`
+files. It does not train directly from a raw image directory.
+
+Run last-three-layer EarlyFiLM training:
+
+```bash
+python train_earlyfilm.py \
+  --config configs/early_film_layers_21_22_23.yaml \
+  --data /path/to/region_sim_dataset.pt \
+  --run-name earlyfilm_layers_21_22_23 \
+  --output-dir logs/earlyfilm \
+  --no_wandb
+```
+
+Resume from a checkpoint:
+
+```bash
+python train_earlyfilm.py \
+  --config configs/early_film_layers_21_22_23.yaml \
+  --data /path/to/region_sim_dataset.pt \
+  --resume-ckpt logs/earlyfilm/<date>/<run-name>/ckpts/best.pth \
+  --run-name earlyfilm_resume \
+  --no_wandb
+```
+
+Checkpoints are written under:
+
+```text
+logs/earlyfilm/<date>/<run-name>/ckpts/
+```
+
+After training, update:
+
+```yaml
+local_inferer:
+  checkpoint_path: "logs/earlyfilm/<date>/<run-name>/ckpts/best.pth"
+```
+
+## 8. Generate sim_proj From Proposal RGB
+
+The sim-proj utility converts a palette-colored proposal/cluster RGB image into
+binary heatmap `.npy` files. It is not intended for unannotated natural RGB
+images.
+
+CLI:
+
+```bash
+python scripts/proposal_to_sim_proj.py \
+  --proposal-img /path/to/proposal.png \
+  --out-dir runs/sim_proj \
+  --category-name chair \
+  --instance-name chair_001 \
+  --frame-idx 0 \
+  --vlm-response-json '{"Red": ["handle"], "Green": ["seat"]}' \
+  --save-png
+```
+
+Python API:
+
+```python
+from utils.sim_proj_utils import write_sim_proj_from_proposal_rgb
+
+sim_proj, manifest = write_sim_proj_from_proposal_rgb(
+    "/path/to/proposal.png",
+    "runs/sim_proj",
+    category_name="chair",
+    instance_name="chair_001",
+    frame_idx=0,
+    vlm_response={"Red": ["handle"], "Green": ["seat"]},
+)
+```
+
+The returned `sim_proj` dict maps each color name to the generated `.npy` path.
+
+## 9. Common Checks
+
+Verify imports and syntax:
+
+```bash
+python -m py_compile \
+  eval_agd.py \
+  local_inference.py \
+  model/early_film.py \
+  model/steervit.py \
+  utils/sim_proj_utils.py
+```
+
+Check that a config builds the requested local inferer:
+
+```bash
+python - <<'PY'
+import numpy as np
+from local_inference import build_affordance_inference
+
+inferer = build_affordance_inference("configs/steervit_eval.yaml")
+img = np.full((128, 160, 3), 255, dtype=np.uint8)
+out = inferer.predict(img, "people can sit on this part of chair and relax.", thresh=None)
+print(type(inferer).__name__, out.shape, out.dtype, float(out.min()), float(out.max()))
+PY
+```

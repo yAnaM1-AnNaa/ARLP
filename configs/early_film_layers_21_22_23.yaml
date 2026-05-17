@@ -1,0 +1,64 @@
+# EarlyFiLM training/eval config for FiLM layers [21, 22, 23].
+#
+# This config is intended for train_earlyfilm.py. After training, set
+# local_inferer.checkpoint_path to the produced checkpoint when using eval_agd.py.
+
+dataset_bg_dir: "/root/autodl-tmp/yolo/dataset/backgrounds"
+
+model:
+  vision_model_name: "vit_large_patch14_dinov2.lvd142m"
+  text_encoder: "roberta-large"
+  resolution: 756
+  film_layers: [21, 22, 23]
+  film_hidden_dim: null
+  feature_aggregation: "mean"
+  modulate_prefix_tokens: false
+  pretrained_vision: true
+
+trainer:
+  batch_size: 2
+  num_epochs: 10
+  random_pad: true
+  val_split: 0.1
+
+optim:
+  lr: 0.0001
+  weight_decay: 0.0001
+
+########################################
+# eval_agd.py-compatible fields
+########################################
+
+global_detector:
+  name: "grounding_dino"
+  model_path: "/root/autodl-tmp/ARLP/grounding-dino-base"
+  params:
+    box_threshold: 0.2
+    text_threshold: 0.2
+    iou: 0.7
+    max_det: 20
+
+local_inferer:
+  name: "earlyfilm"
+  # Replace this with logs/earlyfilm/<date>/<run-name>/ckpts/best.pth after training.
+  checkpoint_path: null
+  load_strict: false
+  batch_size: 1
+  model:
+    vision_model_name: "vit_large_patch14_dinov2.lvd142m"
+    text_encoder: "roberta-large"
+    resolution: 756
+    film_layers: [21, 22, 23]
+    film_hidden_dim: null
+    feature_aggregation: "mean"
+    modulate_prefix_tokens: false
+    pretrained_vision: true
+
+pano_fusion:
+  box_expand_ratio: 0.0
+  local_heatmap_thresh: null
+  final_heatmap_thresh: null
+  overlap_mode: "mean"
+
+eval:
+  prompt_config: "configs/agd_prompts.yaml"

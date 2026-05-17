@@ -1,6 +1,6 @@
 global_detector:
   name: "grounding_dino"  # grounding_dino | yolo_world
-  model_path: "/root/autodl-tmp/yolo/models/grounding-dino-base"
+  model_path: "/root/autodl-tmp/ARLP/grounding-dino-base"
 
   # Detector-specific parameters.
   # GroundingDINO uses box_threshold/text_threshold for post-processing.
@@ -12,30 +12,21 @@ global_detector:
     max_det: 20
 
 local_inferer:
-  name: "latefilm"  # latefilm
-  checkpoint_path: "logs/20260413/oai_vitl_cot/ckpts/best.pth"
+  name: "earlyfilm"
+  checkpoint_path: "/root/autodl-tmp/ARLP/checkpoints/early_film/best (1).pth"
+  load_strict: false
 
-  # Required by latefilm.
-  # LateFiLM builds Conv2DFiLMNet from this block, so these keys must match
-  # Conv2DFiLMNet constructor arguments.
+  # Required by EarlyFiLM. These keys are passed directly to EarlyFiLMDINOv2.
   model:
-    in_channels: 1024      # ViT-L/14 features
-    filters: [256, 64, 1]
-    kernel_sizes: [3, 3, 1]
-    strides: [1, 1, 1]
-    norm: null
-    activation: "lrelu"
-    lang_emb_dim: 1024
-    film_mode: "zero"
-    film_place: "after"
-
-  dino:
-    model_type: "dinov2_vitl14"
-    use_registers: false
-    torch_home: null
-
-  text_embedding:
-    name: "embeddings_oai"
+    vision_model_name: "vit_large_patch14_dinov2.lvd142m"
+    text_encoder: "roberta-large"
+    resolution: 756
+    film_layers: [6, 12, 18, 23]
+    film_hidden_dim: null
+    feature_aggregation: "mean"
+    modulate_prefix_tokens: false
+    pretrained_vision: true
+  batch_size: 1
 
 pano_fusion:
   # Expand each detected box before local inference.

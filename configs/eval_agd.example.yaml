@@ -1,0 +1,136 @@
+# Example schema for eval_agd.py.
+#
+# Copy this file to a runtime config, then keep exactly one detector block and
+# exactly one local_inferer block. Do not mix LateFiLM model fields with
+# EarlyFiLM model fields.
+
+########################################
+# 1. Global detector
+########################################
+
+# Option A: GroundingDINO
+global_detector:
+  name: "grounding_dino"
+  # Use either a Hugging Face repo id, a complete snapshot directory, or a local
+  # directory that directly contains preprocessor_config.json/config.json/weights.
+  model_path: "/root/autodl-tmp/ARLP/grounding-dino-base"
+  params:
+    # GroundingDINO uses box_threshold/text_threshold. eval_agd.py also accepts
+    # conf/text_conf aliases, but these names are clearer for GroundingDINO.
+    box_threshold: 0.2
+    text_threshold: 0.2
+    iou: 0.7
+    max_det: 20
+
+# Option B: YOLOWorld
+# global_detector:
+#   name: "yolo_world"
+#   model_path: "/path/to/yolo_world_weights_or_model"
+#   params:
+#     conf: 0.2
+#     iou: 0.7
+#     max_det: 20
+
+########################################
+# 2. Local affordance model
+########################################
+
+# Option A: LateFiLM
+#
+# LateFiLM uses frozen DINO features first, then runs Conv2DFiLMNet on the dense
+# feature map. Therefore it needs the Conv2DFiLMNet model block, DINO settings,
+# and text embedding settings.
+local_inferer:
+  name: "latefilm"
+  checkpoint_path: "/root/autodl-tmp/ARLP/checkpoints/eval_agd.pth"
+
+  model:
+    in_channels: 1024
+    filters: [256, 64, 1]
+    kernel_sizes: [3, 3, 1]
+    strides: [1, 1, 1]
+    norm: null
+    activation: "lrelu"
+    lang_emb_dim: 1024
+    film_mode: "zero"
+    film_place: "after"
+
+  dino:
+    model_type: "dinov2_vitl14"
+    use_registers: false
+    torch_home: null
+
+  text_embedding:
+    name: "embeddings_oai"
+
+# Option B: EarlyFiLM
+#
+# EarlyFiLM injects FiLM into the ViT backbone and uses RoBERTa text features.
+# It does not use the LateFiLM Conv2DFiLMNet fields above: no in_channels,
+# filters, kernel_sizes, strides, dino, or text_embedding block is needed here.
+#
+# local_inferer:
+#   name: "earlyfilm"
+#   checkpoint_path: "/root/autodl-tmp/ARLP/checkpoints/early_film/best (1).pth"
+#   load_strict: false
+#   batch_size: 1
+#
+#   model:
+#     vision_model_name: "vit_large_patch14_dinov2.lvd142m"
+#     text_encoder: "roberta-large"
+#     resolution: 756
+#     film_layers: [6, 12, 18, 23]
+#     film_hidden_dim: null
+#     feature_aggregation: "mean"
+#     modulate_prefix_tokens: false
+#     pretrained_vision: true
+
+# Option C: SteerViT
+#
+# SteerViT injects gated cross-attention into the ViT backbone and uses RoBERTa
+# token features as the text context. The bundled checkpoint is an adapter/head
+# checkpoint for DINOv2-B/14, so load_strict should stay false.
+#
+# local_inferer:
+#   name: "steervit"
+#   checkpoint_path: "/root/autodl-tmp/ARLP/steervit_dinov2_base.pth"
+#   load_strict: false
+#   batch_size: 1
+#
+#   model:
+#     vision_model_name: "vit_base_patch14_dinov2.lvd142m"
+#     vision_checkpoint_path: "/root/autodl-tmp/HF_HOME/hub/models--facebook--dinov2-base/snapshots/f9e44c814b77203eaa57a6bdbbd535f21ede1415/model.safetensors"
+#     text_encoder: "roberta-large"
+#     resolution: 336
+#     cross_attn_layers: [1, 3, 5, 7, 9, 11]
+#     feature_aggregation: "cls"
+#     pretrained_vision: false
+#     max_text_tokens: 161
+#     text_dim: 1024
+#     cross_attn_heads: 12
+#     cross_attn_dim_head: 96
+
+########################################
+# 3. Detection-to-local fusion
+########################################
+
+pano_fusion:
+  # Expands each detected bbox before local affordance inference.
+  box_expand_ratio: 0.0
+
+  # Keep null for continuous heatmaps and stable KL/SIM/NSS evaluation.
+  local_heatmap_thresh: null
+  final_heatmap_thresh: null
+
+  # mean avoids rewarding duplicated overlapping boxes. max can make visual
+  # results stronger, but changes the evaluation behavior.
+  overlap_mode: "mean"  # mean | sum | max
+
+########################################
+# 4. AGD prompt mapping
+########################################
+
+eval:
+  # Maps GT/{action}/{object} directories to detector classes and affordance
+  # prompts. This file must cover every action/object pair in the dataset root.
+  prompt_config: "configs/agd_prompts.yaml"

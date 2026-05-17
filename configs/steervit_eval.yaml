@@ -1,0 +1,36 @@
+global_detector:
+  name: "grounding_dino"
+  model_path: "/root/autodl-tmp/ARLP/grounding-dino-base"
+  params:
+    box_threshold: 0.2
+    text_threshold: 0.2
+    iou: 0.7
+    max_det: 20
+
+local_inferer:
+  name: "steervit"
+  checkpoint_path: "/root/autodl-tmp/ARLP/steervit_dinov2_base.pth"
+  load_strict: false
+  batch_size: 1
+
+  model:
+    vision_model_name: "vit_base_patch14_dinov2.lvd142m"
+    vision_checkpoint_path: "/root/autodl-tmp/HF_HOME/hub/models--facebook--dinov2-base/snapshots/f9e44c814b77203eaa57a6bdbbd535f21ede1415/model.safetensors"
+    text_encoder: "roberta-large"
+    resolution: 336
+    cross_attn_layers: [1, 3, 5, 7, 9, 11]
+    feature_aggregation: "cls"
+    pretrained_vision: false
+    max_text_tokens: 161
+    text_dim: 1024
+    cross_attn_heads: 12
+    cross_attn_dim_head: 96
+
+pano_fusion:
+  box_expand_ratio: 0.0
+  local_heatmap_thresh: null
+  final_heatmap_thresh: null
+  overlap_mode: "mean"
+
+eval:
+  prompt_config: "configs/agd_prompts.yaml"

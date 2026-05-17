@@ -1,5 +1,6 @@
 from .network import Conv2DFiLMNet
 from .early_film import EarlyFiLMDINOv2, EarlyFiLMViTBackbone, ResidualGlobalFiLM
+from .steervit import SteerViTDINOv2, SteerViTBackbone, load_steervit_checkpoint
 from .open_vocab_detector import (
     DetectionResult,
     OpenVocabDetector,
@@ -13,6 +14,9 @@ __all__ = [
     "EarlyFiLMDINOv2",
     "EarlyFiLMViTBackbone",
     "ResidualGlobalFiLM",
+    "SteerViTDINOv2",
+    "SteerViTBackbone",
+    "load_steervit_checkpoint",
     "DetectionResult",
     "OpenVocabDetector",
     "YOLOWorldDetector",

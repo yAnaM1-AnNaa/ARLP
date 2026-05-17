@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 
 from model.network import Conv2DFiLMNet
 from model.early_film import EarlyFiLMDINOv2
+from model.steervit import SteerViTDINOv2, load_steervit_checkpoint
 from utils.file_utils import SolveFolder
 from utils.img_utils import transform_imgs, load_pretrained_dino, get_dino_features_from_transformed_imgs
 from utils.vlm_utils import get_text_embedding_options
@@ -268,6 +269,110 @@ class EarlyFiLMAffordanceInference:
 
 
 ########################################
+##### SteerViT local inference
+########################################
+
+class SteerViTAffordanceInference:
+    def __init__(self, config_path, checkpoint_path=None):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        cfg = load_config(config_path)
+        local_cfg = cfg.get('local_inferer', {})
+        if local_cfg.get('name', '').lower() != 'steervit':
+            raise ValueError(
+                "SteerViTAffordanceInference requires local_inferer.name='steervit'."
+            )
+
+        model_cfg = local_cfg.get('model', {})
+        checkpoint_path = checkpoint_path or local_cfg.get('checkpoint_path')
+        if checkpoint_path is None:
+            raise ValueError("checkpoint_path must be provided for SteerViT inference.")
+
+        self.batch_size = int(local_cfg.get("batch_size", 1))
+        self.model = SteerViTDINOv2(**model_cfg).to(self.device)
+
+        ckpt = load_steervit_checkpoint(checkpoint_path, map_location=self.device)
+        state = ckpt.get("state_dict", ckpt.get("model", ckpt)) if isinstance(ckpt, dict) else ckpt
+        strict = local_cfg.get("load_strict", False)
+        result = self.model.load_state_dict(state, strict=strict)
+        if not strict:
+            print(
+                "Loaded SteerViT checkpoint with strict=False: "
+                f"{len(result.missing_keys)} missing keys, "
+                f"{len(result.unexpected_keys)} unexpected keys."
+            )
+        self.model.eval()
+        self.transform = self.model.get_transforms()
+
+    @staticmethod
+    def _resize_pred_to_image(pred_map: np.array, out_hw):
+        out_h, out_w = out_hw
+        return np.array(
+            T.functional.resize(
+                Image.fromarray(pred_map.astype(np.float32), mode="F"),
+                (out_h, out_w),
+                interpolation=T.InterpolationMode.BILINEAR))
+
+    def _transform_image(self, img_np):
+        temp = img_np.copy()
+        if temp.max() <= 1.1:
+            temp = temp * 255
+        temp = temp.astype(np.uint8).clip(0, 255)
+        return self.transform(Image.fromarray(temp).convert("RGB"))
+
+    @torch.no_grad()
+    def predict(self, img_np, text, thresh=0.5):
+        proc = self._transform_image(img_np).unsqueeze(0).to(self.device)
+        logits = self.model.get_heatmap_logits(
+            proc,
+            texts=[text],
+            interpolate=False,
+        ).squeeze(0).squeeze(0)
+
+        sim = torch.sigmoid(logits)
+        if thresh is not None:
+            sim = (sim > thresh).float()
+
+        sim_np = sim.cpu().numpy()
+        H, W = img_np.shape[:2]
+        return self._resize_pred_to_image(sim_np, (H, W))
+
+    @torch.no_grad()
+    def predict_batch(self, img_np_list, text, thresh=None):
+        outputs = []
+        if not img_np_list:
+            return outputs
+
+        transformed = []
+        orig_sizes = []
+        for img_np in img_np_list:
+            transformed.append(self._transform_image(img_np))
+            orig_sizes.append(img_np.shape[:2])
+
+        for start in range(0, len(transformed), self.batch_size):
+            end = start + self.batch_size
+            batch_proc = torch.stack(transformed[start:end], dim=0).to(self.device)
+            texts = [text] * len(transformed[start:end])
+            logits = self.model.get_heatmap_logits(
+                batch_proc,
+                texts=texts,
+                interpolate=False,
+            ).squeeze(1)
+
+            sim = torch.sigmoid(logits)
+            if thresh is not None:
+                sim = (sim > thresh).float()
+
+            sim_np = sim.cpu().numpy()
+            for pred, (H, W) in zip(sim_np, orig_sizes[start:end]):
+                outputs.append(self._resize_pred_to_image(pred, (H, W)))
+
+            del batch_proc, logits, sim
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+        return outputs
+
+
+########################################
 ##### Detection-based local inference
 ########################################
 
@@ -393,6 +498,9 @@ def build_affordance_inference(config_path: str, checkpoint_path: Optional[str] 
 
     if local_name == "earlyfilm":
         return EarlyFiLMAffordanceInference(config_path, checkpoint_path)
+
+    if local_name == "steervit":
+        return SteerViTAffordanceInference(config_path, checkpoint_path)
 
     raise ValueError(f"Unsupported local_inferer.name: {local_name}")
 

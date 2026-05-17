@@ -1,0 +1,33 @@
+global_detector:
+  name: "grounding_dino"
+  model_path: "/root/autodl-tmp/ARLP/grounding-dino-base"
+  params:
+    box_threshold: 0.2
+    text_threshold: 0.2
+    iou: 0.7
+    max_det: 20
+
+local_inferer:
+  name: "earlyfilm"
+  checkpoint_path: "/root/autodl-tmp/ARLP/checkpoints/early_film/best (1).pth"
+  load_strict: false
+  batch_size: 1
+
+  model:
+    vision_model_name: "vit_large_patch14_dinov2.lvd142m"
+    text_encoder: "roberta-large"
+    resolution: 756
+    film_layers: [6, 12, 18, 23]
+    film_hidden_dim: null
+    feature_aggregation: "mean"
+    modulate_prefix_tokens: false
+    pretrained_vision: true
+
+pano_fusion:
+  box_expand_ratio: 0.0
+  local_heatmap_thresh: null
+  final_heatmap_thresh: null
+  overlap_mode: "mean"
+
+eval:
+  prompt_config: "configs/agd_prompts.yaml"

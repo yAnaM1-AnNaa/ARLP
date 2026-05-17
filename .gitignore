@@ -2,6 +2,10 @@ checkpoints/
 logs/
 wandb/
 dataset/
+grounding-dino-base/
+steervit_dinov2_base.pth
+*.pth
+*.safetensors
 */__pycache__/
 .vscode/
 */ipynb_checkpoints
@@ -17,4 +21,3 @@ utils/__pycache__/__init__.cpython-312.pyc
 *.pt
 *.pyc
 *.db
-
